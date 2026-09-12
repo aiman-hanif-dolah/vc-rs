@@ -236,6 +236,7 @@ impl VcGui {
             lang.text(text::INPUT),
             &mut self.settings.input_device,
             &devices.inputs,
+            &mut self.settings.recent_input_devices,
             &mut changed,
             true,
         );
@@ -276,6 +277,7 @@ impl VcGui {
             lang.text(text::OUTPUT),
             &mut self.settings.output_device,
             &devices.outputs,
+            &mut self.settings.recent_output_devices,
             &mut changed,
             true,
         );

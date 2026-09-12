@@ -161,6 +161,8 @@ struct GuiSettings {
     output_host: String,
     input_device: String,
     output_device: String,
+    recent_input_devices: Vec<String>,
+    recent_output_devices: Vec<String>,
     wasapi_input_exclusive: bool,
     wasapi_output_exclusive: bool,
     wasapi_buffer_ms: u32,
@@ -213,6 +215,8 @@ impl Default for GuiSettings {
             output_host: default_host_token().to_string(),
             input_device: String::new(),
             output_device: String::new(),
+            recent_input_devices: Vec::new(),
+            recent_output_devices: Vec::new(),
             wasapi_input_exclusive: false,
             wasapi_output_exclusive: false,
             wasapi_buffer_ms: 0,
@@ -946,6 +950,7 @@ fn device_combo(
     label: &str,
     value: &mut String,
     names: &[String],
+    recent: &mut Vec<String>,
     changed: &mut bool,
     show_label: bool,
 ) {
@@ -966,14 +971,49 @@ fn device_combo(
     if missing {
         selected = selected.color(egui::Color32::LIGHT_RED);
     }
+    let mut picked = None;
     combo.selected_text(selected).show_ui(ui, |ui| {
         *changed |= ui
             .selectable_value(value, String::new(), lang.text("System default"))
             .changed();
-        for name in names {
-            *changed |= ui.selectable_value(value, name.clone(), name).changed();
+        let available_recent: Vec<_> = recent
+            .iter()
+            .filter(|name| !name.is_empty() && names.contains(name))
+            .take(3)
+            .collect();
+        for name in &available_recent {
+            let response = ui.selectable_value(value, (*name).clone(), name.as_str());
+            *changed |= response.changed();
+            if response.clicked() {
+                picked = Some((*name).clone());
+            }
+        }
+        if !available_recent.is_empty() {
+            ui.separator();
+        }
+        for name in names.iter().filter(|name| !available_recent.contains(name)) {
+            let response = ui.selectable_value(value, name.clone(), name);
+            *changed |= response.changed();
+            if response.clicked() {
+                picked = Some(name.clone());
+            }
         }
     });
+    // Update after rendering: selecting closes the popup, so its rows never move
+    // beneath the pointer. Disconnected names stay in history for reconnection.
+    if let Some(name) = picked {
+        remember_device(recent, name);
+        *changed = true;
+    }
+}
+
+fn remember_device(recent: &mut Vec<String>, name: String) {
+    if name.is_empty() {
+        return;
+    }
+    recent.retain(|previous| previous != &name && !previous.is_empty());
+    recent.insert(0, name);
+    recent.truncate(3);
 }
 
 fn metric(ui: &mut egui::Ui, label: &str, value: impl ToString) {
@@ -1222,6 +1262,19 @@ fn gui_provider_label(provider: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_history_survives_restart_and_keeps_three_unique_selections() {
+        let mut settings: GuiSettings = toml::from_str("input_device = 'Old mic'").unwrap();
+        assert!(settings.recent_input_devices.is_empty());
+        for name in ["A", "B", "C", "D", "B", ""] {
+            remember_device(&mut settings.recent_input_devices, name.into());
+        }
+        remember_device(&mut settings.recent_output_devices, "Speaker".into());
+        let restored: GuiSettings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored.recent_input_devices, ["B", "D", "C"]);
+        assert_eq!(restored.recent_output_devices, ["Speaker"]);
+    }
 
     #[test]
     fn content_delay_display_keeps_unknown_distinct_from_zero() {

@@ -264,6 +264,11 @@ impl VcGui {
                     } else {
                         &devices.outputs
                     },
+                    if input {
+                        &mut self.settings.recent_input_devices
+                    } else {
+                        &mut self.settings.recent_output_devices
+                    },
                     &mut changed,
                     false,
                 );
