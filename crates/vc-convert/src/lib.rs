@@ -13,6 +13,7 @@
 
 mod checkpoint;
 mod graph;
+mod metadata;
 mod onnx;
 mod pickle;
 mod tensor;
@@ -236,7 +237,7 @@ mod tests {
         // Both modes carry the vcclient-style JSON metadata prop.
         assert_eq!(
             metadata(&model, "metadata"),
-            Some(r#"{"f0":true,"samplingRate":40000}"#)
+            Some(r#"{"f0":true,"samplingRate":40000,"version":"v2"}"#)
         );
 
         // The phase output must come from a wrapping Mod(fmod) node.
@@ -266,7 +267,7 @@ mod tests {
         assert_eq!(metadata(&model, "rvc.export_mode"), None);
         assert_eq!(
             metadata(&model, "metadata"),
-            Some(r#"{"f0":true,"samplingRate":40000}"#)
+            Some(r#"{"f0":true,"samplingRate":40000,"version":"v2"}"#)
         );
     }
 

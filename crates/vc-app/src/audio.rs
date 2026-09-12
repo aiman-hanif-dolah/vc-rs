@@ -12,6 +12,34 @@ use vc_core::dsp;
 const CPAL_SCRATCH_FALLBACK_SAMPLES: usize = 65_536;
 const CPAL_MAX_SCRATCH_SAMPLES: usize = 65_536;
 
+fn stream_format(config: &cpal::SupportedStreamConfig) -> String {
+    let sample = match config.sample_format() {
+        cpal::SampleFormat::F32 => "32-bit float".to_string(),
+        cpal::SampleFormat::F64 => "64-bit float".to_string(),
+        cpal::SampleFormat::I8 => "8-bit PCM".to_string(),
+        cpal::SampleFormat::I16 => "16-bit PCM".to_string(),
+        cpal::SampleFormat::I24 => "24-bit PCM".to_string(),
+        cpal::SampleFormat::I32 => "32-bit PCM".to_string(),
+        cpal::SampleFormat::I64 => "64-bit PCM".to_string(),
+        cpal::SampleFormat::U8 => "8-bit unsigned PCM".to_string(),
+        cpal::SampleFormat::U16 => "16-bit unsigned PCM".to_string(),
+        cpal::SampleFormat::U24 => "24-bit unsigned PCM".to_string(),
+        cpal::SampleFormat::U32 => "32-bit unsigned PCM".to_string(),
+        cpal::SampleFormat::U64 => "64-bit unsigned PCM".to_string(),
+        other => other.to_string(),
+    };
+    format!("{} ch · {sample}", config.channels())
+}
+
+#[cfg(windows)]
+fn wasapi_stream_format(config: &wasapi_audio::WasapiStreamConfig) -> String {
+    let sample = match config.sample_format {
+        wasapi_audio::WasapiSampleFormat::F32 => "32-bit float",
+        wasapi_audio::WasapiSampleFormat::I16 => "16-bit PCM",
+    };
+    format!("{} ch · {sample}", config.channels)
+}
+
 #[cfg(windows)]
 #[path = "wasapi_audio.rs"]
 pub(crate) mod wasapi_audio;
@@ -217,6 +245,23 @@ impl RealtimeAudio {
 
     pub fn input_name(&self) -> &str {
         &self.input_name
+    }
+
+    /// Negotiated stream format, not the internal mono f32 processing format.
+    pub fn input_format(&self) -> String {
+        match &self.input {
+            InputEndpoint::Cpal { config, .. } => stream_format(config),
+            #[cfg(windows)]
+            InputEndpoint::Wasapi(config) => wasapi_stream_format(config),
+        }
+    }
+
+    pub fn output_format(&self) -> String {
+        match &self.output {
+            OutputEndpoint::Cpal { config, .. } => stream_format(config),
+            #[cfg(windows)]
+            OutputEndpoint::Wasapi(config) => wasapi_stream_format(config),
+        }
     }
 
     pub fn output_name(&self) -> &str {

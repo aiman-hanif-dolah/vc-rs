@@ -39,7 +39,7 @@ fn ui_normal_screen_and_start_do_not_spawn_model_validation() {
         fixture.app.onboarding.model_check = None;
         fixture.app.onboarding.support_check = None;
         let mut h = harness(fixture);
-        h.get_by_label(lang.text("Model settings")).click();
+        h.get_by_label(lang.text("Model")).click();
         h.run_steps(4);
         assert!(h.state().app.onboarding.model_check.is_none());
         assert!(h.state().app.onboarding.support_check.is_none());
@@ -138,7 +138,7 @@ fn ui_normal_transport_pending_and_passthrough() {
 fn ui_support_sources_preserve_custom_path_and_download_only_selected_role() {
     for lang in [text::Language::English, text::Language::Japanese] {
         let mut h = harness(ready_main_fixture(lang));
-        h.get_by_label(lang.text("Model settings")).click();
+        h.get_by_label(lang.text("Model")).click();
         h.run_steps(4);
         let original = h.state().app.settings.embedder.clone();
         // Combo controls have distinct labels even though both offer Custom.

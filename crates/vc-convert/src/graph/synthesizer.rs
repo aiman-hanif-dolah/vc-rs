@@ -173,15 +173,9 @@ pub(crate) fn build_model(
     }
 
     // ---- metadata ----------------------------------------------------------
-    // Divergence from the TS source (which emits no metadata for webui and
-    // only rvc.* keys for streaming): both modes also get the vcclient-style
-    // `metadata` JSON prop. vc-core requires truthy "f0" to accept the model
-    // and uses "samplingRate" to size its windows for 32k/40k models
-    // (onnx_meta.rs: validate_rvc_metadata / rvc_sample_rate).
-    let mut metadata_props = vec![(
-        "metadata".to_owned(),
-        format!(r#"{{"f0":true,"samplingRate":{}}}"#, config.sr),
-    )];
+    // Common metadata keeps source provenance distinct from validated graph
+    // facts. Streaming contract keys remain owned by streaming_metadata.
+    let mut metadata_props = crate::metadata::export(checkpoint, options);
     if streaming {
         metadata_props.extend(streaming_metadata(checkpoint));
     }

@@ -75,6 +75,9 @@ pub struct ParsedCheckpoint {
     pub use_f0: bool,
     pub version: RvcVersion,
     pub vocoder: String,
+    /// Bounded descriptive fields from the source, separate from runtime facts.
+    pub source_metadata: serde_json::Map<String, serde_json::Value>,
+    pub omitted_metadata: Vec<String>,
 }
 
 impl ParsedCheckpoint {
@@ -168,12 +171,15 @@ pub fn parse_pth(bytes: &[u8]) -> Result<ParsedCheckpoint> {
         }
     }
 
+    let (source_metadata, omitted_metadata) = crate::metadata::extract(&checkpoint);
     Ok(ParsedCheckpoint {
         config,
         weights,
         use_f0,
         version,
         vocoder,
+        source_metadata,
+        omitted_metadata,
     })
 }
 

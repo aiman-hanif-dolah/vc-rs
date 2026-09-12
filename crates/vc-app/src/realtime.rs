@@ -354,6 +354,9 @@ pub struct EngineStatusSnapshot {
     pub output_device: String,
     pub input_sample_rate: u32,
     pub output_sample_rate: u32,
+    /// Negotiated endpoint formats, captured off the audio callback path.
+    pub input_format: String,
+    pub output_format: String,
     pub passthrough_live_switchable: bool,
 }
 
@@ -669,6 +672,8 @@ fn set_status(
         status.message = message.into();
         status.detail = None;
         if state != EngineState::Running {
+            status.input_format.clear();
+            status.output_format.clear();
             status.input_device.clear();
             status.output_device.clear();
             status.input_sample_rate = 0;
@@ -690,6 +695,8 @@ fn set_error_message(
         status.state = EngineState::Error;
         status.message = message.into();
         status.detail = detail;
+        status.input_format.clear();
+        status.output_format.clear();
         status.input_device.clear();
         status.output_device.clear();
         status.input_sample_rate = 0;
@@ -703,6 +710,8 @@ fn set_error(status: &Mutex<EngineStatusSnapshot>, error: &anyhow::Error) {
         status.state = EngineState::Error;
         status.message = error.to_string();
         status.detail = Some(format!("{error:#}"));
+        status.input_format.clear();
+        status.output_format.clear();
         status.input_device.clear();
         status.output_device.clear();
         status.input_sample_rate = 0;
@@ -1315,6 +1324,8 @@ impl RealtimeSession {
                 output_device: audio.output_name().to_string(),
                 input_sample_rate: input_rate,
                 output_sample_rate: output_rate,
+                input_format: audio.input_format(),
+                output_format: audio.output_format(),
                 passthrough_live_switchable,
             },
             debug_input_wav: config.debug_input_wav,

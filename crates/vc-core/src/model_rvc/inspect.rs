@@ -5,6 +5,22 @@ use tracing::info;
 
 use super::onnx_meta::{read_model_io, RvcIoNames, StreamFormat};
 
+/// Read descriptive metadata without creating a provider or inference session.
+/// Call from a background worker: the protobuf reader reads the model file.
+pub fn read_model_metadata(path: &Path) -> Result<ModelMetadata> {
+    let io = read_model_io(path)?;
+    Ok(ModelMetadata {
+        sample_rate: io.rvc_sample_rate(),
+        properties: io.metadata,
+    })
+}
+
+/// File-declared properties; absent values must not be treated as runtime defaults.
+pub struct ModelMetadata {
+    pub sample_rate: Option<u32>,
+    pub properties: Vec<(String, String)>,
+}
+
 /// Structural validation without constructing an inference session. Used for
 /// user-supplied support files during setup; role compatibility is still checked
 /// by the shared pipeline when preview starts.

@@ -1,10 +1,13 @@
 use super::*;
 
+mod details;
+
 #[derive(Default)]
 pub(crate) struct NormalState {
     pub requested: Option<GuiSettings>,
     pub applied: Option<GuiSettings>,
     pub expected_revision: u64,
+    details: details::ModelDetailsState,
 }
 
 // Compare reload-scoped engine configuration only. Live controls and UI state
@@ -49,21 +52,18 @@ impl VcGui {
             if busy {
                 ui.spinner();
             }
-            ui.label(lang.text(&format!("{:?}", status.state)));
-            if !status.message.is_empty() {
+            let state_label = format!("{:?}", status.state);
+            // The normal running message only repeats the state and audio hosts.
+            // Omit it here, but keep preparation progress and diagnostics visible.
+            let routine_message = status.message == state_label
+                || (running
+                    && status.message.starts_with("Running (in: ")
+                    && status.message.ends_with(')'));
+            ui.label(lang.text(&state_label));
+            if !status.message.is_empty() && !routine_message {
                 ui.label(ui_text::engine_message(
                     lang,
                     &friendly_status_message(&status.message),
-                ));
-            }
-            let applied = self.onboarding.normal.applied.as_ref();
-            if running {
-                ui.small(format!(
-                    "{}: {}",
-                    lang.text("Active backend"),
-                    applied
-                        .map(|s| gui_provider_label(&s.provider))
-                        .unwrap_or(lang.text("Unknown"))
                 ));
             }
         });
@@ -151,7 +151,7 @@ impl VcGui {
                 self.select_voice(ui);
                 // Structural validation belongs to Setup, not normal rendering:
                 // scanning large models here competes with engine loading at Start.
-                egui::CollapsingHeader::new(lang.text("Model settings"))
+                egui::CollapsingHeader::new(lang.text("Model"))
                     .id_salt("model-settings")
                     .show(ui, |ui| {
                         self.support_selector(ui, 0);
@@ -165,6 +165,8 @@ impl VcGui {
                         {
                             self.changed();
                         }
+                        ui.separator();
+                        self.model_details_ui(ui, status);
                     });
                 ui.horizontal_wrapped(|ui| {
                     ui.add_enabled_ui(!self.settings.passthrough, |ui| {
@@ -194,22 +196,18 @@ impl VcGui {
                     self.channel_ui(ui, devices, true, status);
                     self.channel_ui(ui, devices, false, status);
                 }
-                egui::CollapsingHeader::new(lang.text("Audio devices and noise reduction"))
+                egui::CollapsingHeader::new(lang.text("Audio"))
                     .id_salt("audio-settings")
                     .show(ui, |ui| {
                         self.connection_settings_ui(ui, status, devices);
+                        ui.separator();
+                        details::audio_details_ui(ui, lang, status);
                     });
                 egui::CollapsingHeader::new(lang.text("Backend Details"))
                     .id_salt("performance")
                     .show(ui, |ui| {
                         self.performance_settings_ui(ui, status, devices);
                         self.performance_metrics_ui(ui, status);
-                        ui.label(format!(
-                            "{}: {} Hz → {} Hz",
-                            lang.text("Sample rates"),
-                            status.input_sample_rate,
-                            status.output_sample_rate
-                        ));
                         egui::CollapsingHeader::new(lang.text("Error details")).show(ui, |ui| {
                             if let Some(detail) = &status.detail {
                                 ui.label(detail);
