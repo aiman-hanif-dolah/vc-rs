@@ -479,26 +479,23 @@ struct GpuDeviceDiscovery {
 impl VcGui {
     fn language_picker(&mut self, ui: &mut egui::Ui) {
         let previous = self.settings.language;
-        ui.horizontal(|ui| {
-            ui.label("Language / 言語");
-            egui::ComboBox::from_id_salt("language-picker")
-                .selected_text(match self.settings.language {
-                    ui_text::Language::English => "English",
-                    ui_text::Language::Japanese => "日本語",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.settings.language,
-                        ui_text::Language::English,
-                        "English",
-                    );
-                    ui.selectable_value(
-                        &mut self.settings.language,
-                        ui_text::Language::Japanese,
-                        "日本語",
-                    );
-                });
-        });
+        egui::ComboBox::new("language-picker", "Language / 言語")
+            .selected_text(match self.settings.language {
+                ui_text::Language::English => "English",
+                ui_text::Language::Japanese => "日本語",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.settings.language,
+                    ui_text::Language::English,
+                    "English",
+                );
+                ui.selectable_value(
+                    &mut self.settings.language,
+                    ui_text::Language::Japanese,
+                    "日本語",
+                );
+            });
         ui_text::set_language(ui.ctx(), self.settings.language);
         if previous != self.settings.language {
             self.changed();

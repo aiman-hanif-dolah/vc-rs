@@ -142,9 +142,9 @@ impl VcGui {
         let lang = self.settings.language;
         self.normal_toolbar(ui, status);
         ui.separator();
-        // The body alone scrolls; transport and language/setup stay reachable
-        // at small window sizes and with the detail sections expanded.
-        let height = (ui.available_height() - 42.0).max(80.0);
+        // Keep transport reachable while settings, including language/setup,
+        // scroll together at small window sizes or with detail sections expanded.
+        let height = ui.available_height().max(80.0);
         egui::ScrollArea::vertical()
             .id_salt("normal-body")
             .auto_shrink([false, false])
@@ -224,14 +224,12 @@ impl VcGui {
                             }
                         });
                     });
+                ui.separator();
+                self.language_picker(ui);
+                if ui.button(lang.text(text::SETUP)).clicked() {
+                    self.reopen_tutorial();
+                }
             });
-        ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            self.language_picker(ui);
-            if ui.button(lang.text(text::SETUP)).clicked() {
-                self.reopen_tutorial();
-            }
-        });
     }
 
     fn channel_ui(
