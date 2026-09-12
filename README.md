@@ -74,7 +74,7 @@ ONNX 形式の RVC モデルで別の声に変換します。次の 3 つの使�
 
 ### 共通: モデルファイル
 
-`vc-rs` はモデルを同梱しません。次の 3 つを自分で用意します。
+`vc-rs` はモデルを同梱しません。次の 3 つを使用します。声のモデルを選び、補助モデルはGUIから取得できます。
 
 1. **RVC 音声変換モデル**（`.onnx`） — 変換したい声のモデル。**ONNX 形式のみ
    対応**です。`.pth` は直接読み込めませんが、GUI のモデル選択で `.pth` を
@@ -83,18 +83,30 @@ ONNX 形式の RVC モデルで別の声に変換します。次の 3 つの使�
 2. **埋め込み抽出モデル**（ContentVec, `content_vec_500.onnx`）
 3. **F0 推定モデル**（RMVPE, `rmvpe.onnx`）
 
-2 と 3 は付属の `download-models.ps1` で取得できます（下記「モデルの準備」）。
+2 と 3 はGUIの **Download required models** でまとめて取得・設定できます。
 
 ## 使い方（GUI 版）
 
 1. ダウンロードした zip を展開します（**DLL は `vc-gui.exe` と同じフォルダに
    置いたまま**にしてください）。
-2. 下記「モデルの準備」で埋め込み・F0 モデルを取得します。
-3. `vc-gui.exe` を起動します。
+2. 初回は言語を選び、アプリと処理部品の利用条件を確認します。
+3. **マイクとヘッドホンの確認**で、入力メーターを見ながらマイク音量を調整します。**テスト音を鳴らす**で出力先を確認でき、ヘッドホン使用時は**自分の声を聞く**でパススルーを試せます。ノイズ低減は任意です。
+4. 声のRVCモデル（`.onnx` / `.pth`）を選択またはドロップします。対応する`.pth`はアプリ内で変換できます。
+5. 不足するContentVec・RMVPEや処理部品を、内容と利用条件を確認して準備します。取得済みの有効なファイルは再利用し、保存先は自動設定します。
+   準備ができたら**通常画面へ**で設定を保存してセットアップを完了します。音声変換は通常画面から開始します。
+
+案内は音声テスト以降でスキップでき、通常画面の**セットアップ**から再開できます。スキップは利用条件への同意やセットアップ完了とは別に記録します。途中終了後は保存済みの手順から再開し、音声出力やダウンロードは自動再開しません。詳しくは[初回チュートリアルの設計](docs/onboarding.md)を参照してください。
+基本画面では声・入出力・音量・声の高さを選び、**Start voice conversion / Stop** で操作します。モデル・デバイス変更時は **Apply changes / Restart** で反映します。
+通常画面では声・入出力・音量・ピッチを一か所で操作します。開始後は再起動／停止を表示します。左下のLanguageで言語を切り替え、セットアップから案内を再開できます。詳細は[通常画面の構成](docs/normal-screen.md)を参照してください。
 
 ### モデルの準備
 
-埋め込み・F0 モデルを取得します（展開したフォルダで実行）。
+通常はGUIから取得できます（合計約741 MB、配布元はGPL-3.0表記）。進捗表示・キャンセル・再試行に対応し、サイズとSHA-256の検証後に設定します。
+保存先は `%LOCALAPPDATA%\vc-rs\models`（未設定の場合は `%APPDATA%\vc-rs\models`）で、次回起動やアプリ更新後も再利用します。
+既に指定したモデルや、exeと同じフォルダ内の `assets` にある補助モデルも再利用できます。
+声のモデル自体は自分で用意してください。
+
+スクリプトで取得したい場合は、展開したフォルダで実行します。
 
 ```powershell
 pwsh .\download-models.ps1
@@ -109,22 +121,11 @@ RVC 音声変換モデル（`.onnx`）は別途自分で用意してください
 
 ### 画面の操作
 
-1. **Models** — **Browse** から RVC モデル・埋め込み（ContentVec）・F0（RMVPE）
-   の各 `.onnx` を指定します。
-2. **Provider** — バックエンドを選びます（windowsml 版: `windowsml` /
-   `windowsml-directml` / `windowsml-nvtrtx` / `windowsml-cpu` / `cpu`、
-   tensorrt 版: `tensorrt`）。**GPU Priority** と CUDA / TensorRT 用の
-   **GPU Device ID** も選べます。
-3. **Audio** — 入力・出力デバイスを選びます（**Refresh devices** で再取得）。
-   空欄なら「System default」を使います。
-4. **Engine configuration** — **Chunk ms** / **Extra convert ms** を設定します
-   （下記「リアルタイム設定の調整」）。
-5. **Apply / Start** を押すと反映・開始します。**モデル・Provider・デバイス・
-   Chunk の変更はこのボタンを押すまで適用されません。** **Stop** で停止します。
-6. **Live parameters**（Pitch shift / Speaker ID / Input gain / Output gain）は
-   リアルタイムに反映されます。
-7. **Telemetry** に推論時間・入出力 RMS・オーバーラン/アンダーランが表示され、
-   音切れや負荷の状況を確認できます（推論時間が chunk の予算を超えると色で警告）。
+- **モデル関連の設定**：特徴抽出・F0モデルはContentVec / RMVPEの取得かカスタムを選びます。カスタムの場合のみパスとBrowseを表示します。
+- **音声デバイス・ノイズ低減**：接続方式、デバイス更新、方式別のノイズ低減設定をまとめます。
+- **バックエンド詳細**：対応バックエンド、GPU選択、優先度、Chunk ms / Extra convert ms、メトリクス、エラー詳細をまとめます。
+
+音量・ピッチなどは即時反映し、再起動が必要な変更は上部に案内します。
 
 設定は自動的に保存され（`%APPDATA%\vc-rs\gui.toml`）、次回起動時に復元されます。
 モデル 3 種がロード済みなら、実行中の **Passthrough** をチャンク境界でライブ切り替え
@@ -151,8 +152,10 @@ GTCRN は超軽量（約 48K パラメータ）の音声強調モデルで、CPU
 十分間に合います。**standalone（CLI/GUI）版**で利用でき、Windows ML 版では
 ONNX Runtime CPU、TensorRT 版では native TensorRT で実行します。VST3 版には
 含まれません。固定遅延は約 48 ms（16 kHz の STFT 再構成 + アダプタの FIFO）です。モデルは
-`download-models.ps1 -Gtcrn` で `assets\gtcrn\` に取得し、GUI の **GTCRN model
-dir** または CLI の `--gtcrn-model <dir>` で指定します。
+GUIでは **音声デバイス・ノイズ低減 → Input denoiser → gtcrn → Download GTCRN** で取得・設定できます。
+公式配布の約352 KBのモデル（MIT）を検証後、`%LOCALAPPDATA%\vc-rs\models\gtcrn` にライセンス文とともに保存します。
+**Apply / Start** で反映します。既存のモデルフォルダも **GTCRN model dir** で指定できます。
+スクリプトを使う場合は `download-models.ps1 -Gtcrn` で `assets\gtcrn\` に取得し、CLI の `--gtcrn-model <dir>` などで指定します。
 
 ## リアルタイム設定の調整
 

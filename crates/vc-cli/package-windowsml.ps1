@@ -83,6 +83,10 @@ if (Test-Path $licenseSrc) {
 }
 
 # Bundle the Windows App SDK license alongside the bootstrapper we redistribute.
+$onboardingLicense = Join-Path $licenseSrc 'WindowsAppSDK-Onboarding.txt'
+if ([IO.File]::ReadAllText($SdkLicense).Replace("`r`n", "`n").Trim() -ne [IO.File]::ReadAllText($onboardingLicense).Replace("`r`n", "`n").Trim()) {
+    throw 'Windows App SDK terms changed. Review and update WindowsAppSDK-Onboarding.txt and ONBOARDING-COMPONENTS.md before packaging.'
+}
 Copy-Item $SdkLicense (Join-Path $licDest 'WindowsAppSDK-LICENSE.txt') -Force
 
 Write-Host "Done: bundled Microsoft.WindowsAppRuntime.Bootstrap.dll + licenses into $DestDir." -ForegroundColor Green

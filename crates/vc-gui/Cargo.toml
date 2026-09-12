@@ -9,6 +9,7 @@ description = "Standalone GUI for vc-rs"
 workspace = true
 
 [features]
+ui-snapshots = ["egui_kittest/snapshot", "dep:egui-wgpu", "dep:wgpu", "dep:image", "dep:pollster"]
 default = ["windowsml", "tensorrt", "rnnoise", "gtcrn"]
 windowsml = ["vc-app/windowsml", "vc-core/windowsml"]
 tensorrt = ["vc-app/tensorrt", "vc-core/tensorrt"]
@@ -22,6 +23,12 @@ asio = ["vc-app/asio"]
 jack = ["vc-app/jack"]
 
 [dependencies]
+# Opt-in test renderer; Vulkan avoids upstream kittest's incompatible DX12
+# allocator bindings. These are absent from the shipped GUI feature sets.
+egui-wgpu = { version = "0.34.3", default-features = false, optional = true }
+wgpu = { version = "29.0.3", default-features = false, features = ["std", "vulkan", "wgsl"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+pollster = { version = "0.4", optional = true }
 vc-app = { path = "../vc-app", default-features = false }
 vc-core = { path = "../vc-core" }
 # Offline .pth → .onnx converter behind the RVC model picker. ORT-free and
@@ -32,4 +39,9 @@ egui = "0.34.1"
 rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+ureq = { version = "3.4", default-features = false, features = ["native-tls"] }
+sha2 = "0.10"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+egui_kittest = "0.34.3"

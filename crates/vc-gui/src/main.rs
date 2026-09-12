@@ -12,18 +12,21 @@ use vc_app::{
     AudioHost, DenoiserMode, EngineController, EngineState, F0Config, LiveParams, NoiseGateShaping,
     OutputDynamicsConfig, RealtimeConfig, Smoother, TelemetrySnapshot,
 };
-use vc_core::gpu::{list_cuda_devices, GpuDevice};
+#[cfg(not(test))]
+use vc_core::gpu::list_cuda_devices;
+use vc_core::gpu::GpuDevice;
 use vc_core::validation::CONVERSION_TIMING_LIMITS;
 use vc_core::Provider;
+
+mod model_setup;
+mod onboarding;
+mod ui_text;
 
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 const TELEMETRY_REFRESH: Duration = Duration::from_millis(250);
 const GUI_CROSSFADE_MS: u32 = 85;
 const GUI_SOLA_SEARCH_MS: u32 = 12;
 const GUI_MIN_EXTRA_CONVERT_MS: u32 = 100;
-const RMS_HEALTHY_MIN: f32 = 0.01;
-const RMS_HEALTHY_MAX: f32 = 0.10;
-const RMS_HIGH_MAX: f32 = 0.25;
 const GPU_DEVICE_SELECTOR_AVAILABLE: bool = cfg!(any(feature = "cuda", feature = "tensorrt"));
 
 fn main() -> eframe::Result {
@@ -32,9 +35,24 @@ fn main() -> eframe::Result {
         .init();
     eframe::run_native(
         "vc-rs",
-        eframe::NativeOptions::default(),
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([880.0, 680.0])
+                .with_min_inner_size([520.0, 440.0]),
+            ..Default::default()
+        },
         Box::new(|cc| {
             install_system_japanese_font(&cc.egui_ctx);
+            let mut style = (*cc.egui_ctx.global_style()).clone();
+            style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+            style.spacing.button_padding = egui::vec2(12.0, 7.0);
+            style
+                .text_styles
+                .insert(egui::TextStyle::Body, egui::FontId::proportional(16.0));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Button, egui::FontId::proportional(16.0));
+            cc.egui_ctx.set_global_style(style);
             Ok(Box::new(VcGui::new()))
         }),
     )
@@ -120,9 +138,17 @@ fn system_japanese_font_candidates() -> Vec<(PathBuf, u32)> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 struct GuiSettings {
+    language: ui_text::Language,
+    setup_completed: bool,
+    // Skipping dismisses the tutorial without claiming models/audio were tested.
+    setup_skipped: bool,
+    tutorial: Option<onboarding::Progress>,
+    accepted_terms: Vec<String>,
     model: String,
     embedder: String,
     f0_model: String,
+    support_custom_mode: [String; 2],
+    support_custom_paths: [String; 2],
     provider: String,
     gpu_priority: String,
     gpu_device_id: u32,
@@ -170,9 +196,16 @@ struct GuiSettings {
 impl Default for GuiSettings {
     fn default() -> Self {
         Self {
+            language: ui_text::Language::English,
+            setup_completed: false,
+            setup_skipped: false,
+            tutorial: None,
+            accepted_terms: Vec::new(),
             model: String::new(),
             embedder: String::new(),
             f0_model: String::new(),
+            support_custom_mode: Default::default(),
+            support_custom_paths: Default::default(),
             provider: default_provider_name().to_string(),
             gpu_priority: "high".to_string(),
             gpu_device_id: 0,
@@ -236,6 +269,11 @@ impl GuiSettings {
         // valid even if the device's catalog does not list it right now.
         if !Provider::from_name(&self.provider).is_some_and(Provider::available_in_build) {
             self.provider = default_provider_name().to_string();
+        }
+        if cfg!(feature = "windowsml") && self.provider == "cpu" {
+            // Both names use the same Windows ML runtime and CPU session.
+            // Canonicalize old settings so the single CPU option stays selected.
+            self.provider = "windowsml-cpu".into();
         }
         if !gpu_priority_names().contains(&self.gpu_priority.as_str()) {
             self.gpu_priority = "high".to_string();
@@ -343,6 +381,8 @@ struct VcGui {
     applied_chunk_ms: Option<u32>,
     gpu_devices: Arc<Mutex<GpuDeviceDiscovery>>,
     pth_convert: Option<PthConvert>,
+    model_download: Option<model_setup::Download>,
+    onboarding: onboarding::Onboarding,
 }
 
 /// State of the `.pth` → `.onnx` conversion dialog. The conversion itself
@@ -426,27 +466,60 @@ fn is_pth_path(value: &str) -> bool {
 
 #[derive(Clone, Debug, Default)]
 struct GpuDeviceDiscovery {
+    #[cfg(not(test))]
     started: bool,
     devices: Option<Vec<GpuDevice>>,
     error: Option<String>,
 }
 
 impl VcGui {
+    fn language_picker(&mut self, ui: &mut egui::Ui) {
+        let previous = self.settings.language;
+        ui.horizontal(|ui| {
+            ui.label("Language / 言語");
+            egui::ComboBox::from_id_salt("language-picker")
+                .selected_text(match self.settings.language {
+                    ui_text::Language::English => "English",
+                    ui_text::Language::Japanese => "日本語",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.settings.language,
+                        ui_text::Language::English,
+                        "English",
+                    );
+                    ui.selectable_value(
+                        &mut self.settings.language,
+                        ui_text::Language::Japanese,
+                        "日本語",
+                    );
+                });
+        });
+        ui_text::set_language(ui.ctx(), self.settings.language);
+        if previous != self.settings.language {
+            self.changed();
+        }
+    }
+
     fn new() -> Self {
         let (mut settings, ui_error) = load_settings();
         settings.normalize_gui_managed_settings();
+        let discovered = discover_support_models(&mut settings);
+        let onboarding = onboarding::Onboarding::new(&settings);
         let controller = EngineController::new(settings.live());
         let _ = controller.refresh_devices(settings.input_host(), settings.output_host());
         Self {
             controller,
             settings,
-            dirty_since: None,
+            dirty_since: discovered.then(Instant::now),
             ui_error,
             telemetry: TelemetrySnapshot::default(),
             telemetry_updated_at: Instant::now() - TELEMETRY_REFRESH,
             applied_chunk_ms: None,
             gpu_devices: Arc::new(Mutex::new(GpuDeviceDiscovery::default())),
             pth_convert: None,
+            model_download: None,
+            onboarding,
         }
     }
 
@@ -460,23 +533,26 @@ impl VcGui {
             .dirty_since
             .is_some_and(|at| at.elapsed() >= SAVE_DEBOUNCE)
         {
-            self.dirty_since = None;
             if let Err(err) = save_settings(&self.settings) {
                 self.ui_error = Some(err);
+                self.dirty_since = Some(Instant::now());
+            } else {
+                self.dirty_since = None;
             }
         }
     }
 
     fn browse_into(&mut self, kind: ModelKind) {
+        let lang = self.settings.language;
         // Only the RVC slot accepts .pth: picking one opens the conversion
         // dialog instead of storing the path (the engine only loads .onnx).
         let dialog = match kind {
             ModelKind::Rvc => rfd::FileDialog::new()
-                .add_filter("RVC model", &["onnx", "pth"])
-                .add_filter("ONNX model", &["onnx"])
-                .add_filter("PyTorch checkpoint", &["pth"]),
+                .add_filter(lang.text("RVC model"), &["onnx", "pth"])
+                .add_filter(lang.text("ONNX model"), &["onnx"])
+                .add_filter(lang.text("PyTorch checkpoint"), &["pth"]),
             ModelKind::Embedder | ModelKind::F0 => {
-                rfd::FileDialog::new().add_filter("ONNX model", &["onnx"])
+                rfd::FileDialog::new().add_filter(lang.text("ONNX model"), &["onnx"])
             }
         };
         if let Some(path) = dialog.pick_file() {
@@ -497,6 +573,7 @@ impl VcGui {
     /// Render the `.pth` conversion dialog and apply its state transitions.
     /// Actions mutate `self` after the window closure to keep borrows simple.
     fn pth_convert_window(&mut self, ctx: &egui::Context) {
+        let lang = self.settings.language;
         enum Action {
             None,
             Start,
@@ -515,43 +592,50 @@ impl VcGui {
             .unwrap_or(PthConvertState::Configuring);
         let mut action = Action::None;
 
-        egui::Window::new("Convert .pth to ONNX")
+        egui::Window::new(lang.text("Convert .pth to ONNX"))
+            .id(egui::Id::new("pth-conversion"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| match &state {
                 PthConvertState::Configuring => {
-                    ui.label(format!("Source: {}", convert.source.display()));
+                    ui.label(format!(
+                        "{}: {}",
+                        lang.text("Source"),
+                        convert.source.display()
+                    ));
                     let output = convert.output_path();
-                    ui.label(format!("Output: {}", output.display()));
+                    ui.label(format!("{}: {}", lang.text("Output"), output.display()));
                     if output.exists() {
-                        ui.small("The existing file will be overwritten.");
+                        ui.small(lang.text("The existing file will be overwritten."));
                     }
-                    egui::ComboBox::from_label("Export mode")
+                    egui::ComboBox::new("Export mode", lang.text("Export mode"))
                         .selected_text(match convert.mode {
-                            vc_convert::ExportMode::Streaming => "Streaming (recommended)",
-                            vc_convert::ExportMode::Webui => "WebUI-compatible",
+                            vc_convert::ExportMode::Streaming => {
+                                lang.text("Streaming (recommended)")
+                            }
+                            vc_convert::ExportMode::Webui => lang.text("WebUI-compatible"),
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut convert.mode,
                                 vc_convert::ExportMode::Streaming,
-                                "Streaming (recommended)",
+                                lang.text("Streaming (recommended)"),
                             );
                             ui.selectable_value(
                                 &mut convert.mode,
                                 vc_convert::ExportMode::Webui,
-                                "WebUI-compatible",
+                                lang.text("WebUI-compatible"),
                             );
                         });
-                    ui.small(
+                    ui.small(lang.text(
                         "Streaming exports carry NSF phase across chunks for the realtime engine.",
-                    );
+                    ));
                     ui.horizontal(|ui| {
-                        if ui.button("Convert").clicked() {
+                        if ui.button(lang.text("Convert")).clicked() {
                             action = Action::Start;
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(lang.text("Cancel")).clicked() {
                             action = Action::Close;
                         }
                     });
@@ -559,7 +643,7 @@ impl VcGui {
                 PthConvertState::Running { stage } => {
                     ui.horizontal(|ui| {
                         ui.add(egui::Spinner::new());
-                        ui.label(*stage);
+                        ui.label(lang.text(stage));
                     });
                     // Keep repainting so the worker thread's progress shows
                     // without user input.
@@ -571,10 +655,10 @@ impl VcGui {
                 PthConvertState::Failed { error } => {
                     ui.colored_label(egui::Color32::LIGHT_RED, error);
                     ui.horizontal(|ui| {
-                        if ui.button("Retry").clicked() {
+                        if ui.button(lang.text("Retry")).clicked() {
                             action = Action::Retry;
                         }
-                        if ui.button("Close").clicked() {
+                        if ui.button(lang.text("Close")).clicked() {
                             action = Action::Close;
                         }
                     });
@@ -600,6 +684,7 @@ impl VcGui {
             }
             Action::Accept(output) => {
                 self.settings.model = output.to_string_lossy().into_owned();
+                self.onboarding.model_check = None;
                 self.pth_convert = None;
                 self.changed();
             }
@@ -607,16 +692,42 @@ impl VcGui {
     }
 
     fn apply_or_start(&mut self) {
+        // Setup checks are transient UI state, not a prerequisite for Start.
+        // The shared engine validates actual files/runtime and reports failures here.
+        if !self.settings.passthrough
+            && (!model_setup::available(&self.settings.model)
+                || is_pth_path(&self.settings.model)
+                || !model_setup::available(&self.settings.embedder)
+                || !model_setup::available(&self.settings.f0_model))
+        {
+            self.ui_error =
+                Some("Choose a voice model and prepare ContentVec / RMVPE in Setup.".into());
+            return;
+        }
         self.controller.set_live_params(self.settings.live());
-        let chunk_ms = self.settings.chunk_ms;
+        let revision = self.controller.snapshot().0.session_revision + 1;
         match self.settings.realtime().and_then(|config| {
-            self.controller
-                .apply_config(config)
-                .map_err(|e| format!("{e:#}"))
+            #[cfg(not(test))]
+            {
+                self.controller
+                    .apply_config(config)
+                    .map_err(|e| format!("{e:#}"))
+            }
+            #[cfg(test)]
+            {
+                let _ = config;
+                self.onboarding.effects.start_requests += 1;
+                self.onboarding
+                    .effects
+                    .start_error
+                    .clone()
+                    .map_or(Ok(()), Err)
+            }
         }) {
             Ok(()) => {
                 self.ui_error = None;
-                self.applied_chunk_ms = Some(chunk_ms);
+                self.onboarding.normal.requested = Some(self.settings.clone());
+                self.onboarding.normal.expected_revision = revision;
             }
             Err(err) => self.ui_error = Some(err),
         }
@@ -627,340 +738,59 @@ impl VcGui {
             self.ui_error = Some(format!("{err:#}"));
         } else {
             self.applied_chunk_ms = None;
+            self.onboarding.normal.requested = None;
+            self.onboarding.normal.applied = None;
         }
     }
 }
 
 impl eframe::App for VcGui {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.stop();
+        if self.dirty_since.is_some() {
+            if let Err(error) = save_settings(&self.settings) {
+                eprintln!("Failed to save settings on exit: {error}");
+            }
+        }
+    }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.maybe_save();
-        self.pth_convert_window(ui.ctx());
-        let (status, latest_telemetry, devices) = self.controller.snapshot();
-        if self.telemetry_updated_at.elapsed() >= TELEMETRY_REFRESH {
-            self.telemetry = latest_telemetry;
-            self.telemetry_updated_at = Instant::now();
-        }
-        let telemetry = self.telemetry;
-        ui.heading("vc-rs Standalone");
-        ui.horizontal(|ui| {
-            ui.label(format!(
-                "Status: {:?} - {}",
-                status.state,
-                friendly_status_message(&status.message)
-            ));
-            if status.state == EngineState::Running {
-                ui.label(format!(
-                    "{} Hz -> {} Hz",
-                    status.input_sample_rate, status.output_sample_rate
-                ));
-            }
-        });
-        if let Some(detail) = &status.detail {
-            egui::CollapsingHeader::new("Error details")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.monospace(detail);
-                });
-        }
-        if let Some(error) = &self.ui_error {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
-        }
-        if let Some(error) = &devices.error {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
-        }
-        ui.horizontal(|ui| {
-            if ui.button("Apply / Start").clicked() {
-                self.apply_or_start();
-            }
-            if ui.button("Stop").clicked() {
-                self.stop();
-            }
-            let passthrough_enabled =
-                status.state != EngineState::Running || status.passthrough_live_switchable;
-            if ui
-                .add_enabled(
-                    passthrough_enabled,
-                    egui::Checkbox::new(&mut self.settings.passthrough, "Passthrough"),
-                )
-                .changed()
-            {
-                self.controller.set_passthrough(self.settings.passthrough);
-                self.changed();
-            }
-        });
-        if status.state == EngineState::Running && !status.passthrough_live_switchable {
-            ui.label("Live passthrough switching requires all three models; Apply / Start after selecting them.");
-        }
-        ui.separator();
-
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let mut changed = false;
-            ui.heading("Models");
-            let (path_changed, browse_clicked) =
-                model_path_control(ui, "RVC model", &mut self.settings.model);
-            changed |= path_changed;
-            if browse_clicked {
-                self.browse_into(ModelKind::Rvc);
-            }
-            // A .pth typed or pasted into the field can't be loaded directly;
-            // offer the converter instead of failing later at Apply/Start.
-            if is_pth_path(&self.settings.model) {
-                ui.horizontal(|ui| {
-                    ui.small("PyTorch checkpoints must be converted to ONNX first.");
-                    if ui.small_button("Convert to ONNX…").clicked() {
-                        self.pth_convert =
-                            Some(PthConvert::new(PathBuf::from(&self.settings.model)));
-                    }
-                });
-            }
-            let (path_changed, browse_clicked) =
-                model_path_control(ui, "Embedder", &mut self.settings.embedder);
-            changed |= path_changed;
-            if browse_clicked {
-                self.browse_into(ModelKind::Embedder);
-            }
-            let (path_changed, browse_clicked) =
-                model_path_control(ui, "F0 model", &mut self.settings.f0_model);
-            changed |= path_changed;
-            if browse_clicked {
-                self.browse_into(ModelKind::F0);
-            }
-
-            egui::ComboBox::from_label("Provider")
-                .selected_text(&self.settings.provider)
-                .show_ui(ui, |ui| {
-                    // Build's base backends plus the device's live Windows ML
-                    // catalog EPs (cached in vc-core), so the picker offers what
-                    // is actually usable here rather than a fixed per-build list.
-                    for provider in vc_core::selectable_providers() {
-                        let label = provider.label();
-                        changed |= ui
-                            .selectable_value(
-                                &mut self.settings.provider,
-                                label.to_string(),
-                                label,
-                            )
-                            .changed();
-                    }
-                });
-            // GPU priority now applies to every backend: a process-wide Windows
-            // GPU scheduling priority class (set on engine start) plus, on the
-            // TensorRT path, a CUDA stream priority. So it's shown for all builds.
-            egui::ComboBox::from_label("GPU Priority")
-                .selected_text(&self.settings.gpu_priority)
-                .show_ui(ui, |ui| {
-                    for priority in gpu_priority_names() {
-                        changed |= ui
-                            .selectable_value(
-                                &mut self.settings.gpu_priority,
-                                priority.to_string(),
-                                *priority,
-                            )
-                            .changed();
-                    }
-                });
-            if gpu_device_selector_visible(&self.settings.provider) {
-                ensure_gpu_device_discovery(&self.gpu_devices);
-                changed |=
-                    gpu_device_control(ui, &mut self.settings.gpu_device_id, &self.gpu_devices);
-            }
-
-            ui.separator();
-            ui.heading("Audio");
-            // Host selectors only matter when more than one host is available on
-            // this platform/build (e.g. WASAPI + ASIO). A changed host re-enumerates
-            // devices for that direction and marks the config dirty (applies on
-            // restart).
-            let mut host_changed = false;
-            if gui_host_names().len() > 1 {
-                backend_combo(
-                    ui,
-                    "Input backend",
-                    &mut self.settings.input_host,
-                    &mut host_changed,
-                );
-                backend_combo(
-                    ui,
-                    "Output backend",
-                    &mut self.settings.output_host,
-                    &mut host_changed,
-                );
-                ui.label(
-                    "ASIO uses one driver for both directions; pick the same device for input and output.",
-                );
-            }
-            if ui.button("Refresh devices").clicked() || host_changed {
-                let _ = self
-                    .controller
-                    .refresh_devices(self.settings.input_host(), self.settings.output_host());
-            }
-            changed |= host_changed;
-            device_combo(
-                ui,
-                "Input device",
-                &mut self.settings.input_device,
-                &devices.inputs,
-                &mut changed,
-            );
-            device_combo(
-                ui,
-                "Output device",
-                &mut self.settings.output_device,
-                &devices.outputs,
-                &mut changed,
-            );
-
-            ui.separator();
-            ui.heading("Engine configuration (Apply to restart)");
-            changed |= ui
-                .add(
-                    egui::Slider::new(
-                        &mut self.settings.chunk_ms,
-                        CONVERSION_TIMING_LIMITS.min_chunk_ms
-                            ..=CONVERSION_TIMING_LIMITS.max_chunk_ms,
-                    )
-                    // Preserve invalid saved values for validation; default
-                    // slider clamping would silently snap 25 ms on display.
-                    .clamping(egui::SliderClamping::Edits)
-                    .step_by(10.0)
-                    .text("Chunk ms"),
-                )
-                .changed();
-            ui.small("RVC: 10 ms steps, with integer samples at both device rates.");
-            changed |= ui
-                .add(
-                    egui::Slider::new(
-                        &mut self.settings.extra_convert_ms,
-                        GUI_MIN_EXTRA_CONVERT_MS..=CONVERSION_TIMING_LIMITS.max_extra_convert_ms,
-                    )
-                    .text("Extra convert ms"),
-                )
-                .changed();
-
-            ui.separator();
-            ui.heading("Live parameters");
-            changed |= ui
-                .add(
-                    egui::Slider::new(&mut self.settings.pitch_shift, -24.0..=24.0)
-                        .text("Pitch shift"),
-                )
-                .changed();
-            changed |= ui
-                .add(egui::Slider::new(&mut self.settings.speaker_id, 0..=255).text("Speaker ID"))
-                .changed();
-            changed |= ui
-                .add(
-                    egui::Slider::new(&mut self.settings.input_gain, 0.0..=12.0).text("Input gain"),
-                )
-                .changed();
-            changed |= ui
-                .add(
-                    egui::Slider::new(&mut self.settings.output_gain, 0.0..=12.0)
-                        .text("Output gain"),
-                )
-                .changed();
-            egui::ComboBox::from_label("Input denoiser")
-                .selected_text(&self.settings.denoiser)
-                .show_ui(ui, |ui| {
-                    for denoiser in denoiser_names() {
-                        changed |= ui
-                            .selectable_value(
-                                &mut self.settings.denoiser,
-                                denoiser.to_string(),
-                                *denoiser,
-                            )
-                            .changed();
-                    }
-                });
-            if self.settings.denoiser == "noise-gate" {
-                changed |= ui
-                    .add(
-                        egui::Slider::new(&mut self.settings.noise_gate_threshold, 0.0001..=0.5)
-                            .logarithmic(true)
-                            .text("Gate threshold"),
-                    )
-                    .changed();
-                changed |= ui
-                    .add(
-                        egui::Slider::new(&mut self.settings.noise_gate_attack_ms, 0.0..=200.0)
-                            .text("Gate attack (ms)"),
-                    )
-                    .changed();
-                changed |= ui
-                    .add(
-                        egui::Slider::new(&mut self.settings.noise_gate_release_ms, 0.0..=1000.0)
-                            .text("Gate release (ms)"),
-                    )
-                    .changed();
-                changed |= ui
-                    .add(
-                        egui::Slider::new(&mut self.settings.noise_gate_floor, 0.0..=1.0)
-                            .text("Gate floor"),
-                    )
-                    .changed();
-            }
-            // GTCRN model dir is reload-scoped (the denoiser is built at load),
-            // matching the staged-settings convention for model paths.
-            if self.settings.denoiser == "gtcrn" {
-                ui.horizontal(|ui| {
-                    ui.label("GTCRN model dir");
-                    changed |= ui
-                        .text_edit_singleline(&mut self.settings.gtcrn_model_dir)
-                        .changed();
-                    if ui.button("Browse…").clicked() {
-                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                            self.settings.gtcrn_model_dir = dir.to_string_lossy().into_owned();
-                            changed = true;
-                        }
-                    }
-                });
-            }
-            if changed {
-                self.changed();
-            }
-            ui.separator();
-            ui.heading("Telemetry");
-            egui::Grid::new("telemetry").show(ui, |ui| {
-                let processing = format!("{:.1} ms", telemetry.processing_us as f64 / 1000.0);
-                let color = (status.state == EngineState::Running)
-                    .then(|| self.applied_chunk_ms.and_then(|ms| inference_color(telemetry.processing_us, ms)))
-                    .flatten();
-                if let Some(color) = color {
-                    colored_metric(ui, "Processing (total)", processing, color);
-                } else {
-                    metric(ui, "Processing (total)", processing);
+        if ui.ctx().input(|i| i.viewport().close_requested()) && self.dirty_since.is_some() {
+            match save_settings(&self.settings) {
+                Ok(()) => self.dirty_since = None,
+                Err(error) => {
+                    self.ui_error = Some(error);
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 }
-                metric(ui, "Content delay (nominal)", format_content_delay(telemetry.content_delay_samples, status.output_sample_rate));
-                let inference_ms = telemetry.inference_us.saturating_add(500) / 1_000;
-                let inference_color = (status.state == EngineState::Running)
-                    .then(|| {
-                        self.applied_chunk_ms
-                            .and_then(|chunk_ms| inference_color(telemetry.inference_us, chunk_ms))
-                    })
-                    .flatten();
-                if let Some(color) = inference_color {
-                    colored_metric(ui, "Inference", format!("{inference_ms} ms"), color);
-                } else {
-                    metric(ui, "Inference", format!("{inference_ms} ms"));
+            }
+        }
+        egui::Frame::new()
+            .fill(ui.visuals().panel_fill)
+            .inner_margin(20)
+            .show(ui, |ui| {
+                self.maybe_save();
+                self.pth_convert_window(ui.ctx());
+                let (status, latest, devices) = self.controller.snapshot();
+                if self.telemetry_updated_at.elapsed() >= TELEMETRY_REFRESH {
+                    self.telemetry = latest;
+                    self.telemetry_updated_at = Instant::now();
                 }
-                rms_metric(ui, "Input RMS", telemetry.input_rms);
-                rms_metric(ui, "Output RMS", telemetry.output_rms);
-                metric(ui, "Input overruns", telemetry.input_overruns);
-                metric(ui, "Output underruns", telemetry.output_underruns);
-                metric(
-                    ui,
-                    "Dropped output samples",
-                    telemetry.output_dropped_samples,
-                );
-                metric(
-                    ui,
-                    "Output buffered samples",
-                    telemetry.output_buffer_samples,
-                );
+                if self.onboarding.active() {
+                    if let Some(error) = &self.ui_error {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_RED,
+                            ui_text::diagnostic_message(self.settings.language, error),
+                        );
+                    }
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.download_status(ui);
+                        self.onboarding_ui(ui, &status, &devices);
+                    });
+                } else {
+                    self.basic_ui(ui, &status, &devices);
+                }
+                ui.ctx().request_repaint_after(Duration::from_millis(33));
             });
-            ui.small("Content delay excludes devices, queues, chunk accumulation and processing time.");
-        });
-        ui.ctx().request_repaint_after(Duration::from_millis(33));
     }
 }
 
@@ -980,6 +810,7 @@ fn gpu_device_selector_visible(provider: &str) -> bool {
         && Provider::from_name(provider).is_some_and(Provider::shows_gpu_device_selector)
 }
 
+#[cfg(not(test))]
 fn ensure_gpu_device_discovery(discovery: &Arc<Mutex<GpuDeviceDiscovery>>) {
     if let Ok(mut current) = discovery.lock() {
         if current.started {
@@ -1022,14 +853,19 @@ fn gpu_device_control(
     selected_id: &mut u32,
     discovery: &Mutex<GpuDeviceDiscovery>,
 ) -> bool {
+    let lang = ui_text::language(ui);
     let discovery = discovery
         .lock()
         .map(|value| value.clone())
         .unwrap_or_default();
     if let Some(devices) = discovery.devices {
-        let selected_text = gpu_device_label(*selected_id, &devices);
+        let selected_text = if devices.iter().any(|device| device.id == *selected_id) {
+            gpu_device_label(*selected_id, &devices)
+        } else {
+            format!("{} {}", lang.text("Unavailable: device"), selected_id)
+        };
         let mut changed = false;
-        egui::ComboBox::from_label("GPU Device")
+        egui::ComboBox::new("GPU Device", lang.text("GPU Device"))
             .selected_text(selected_text)
             .show_ui(ui, |ui| {
                 for device in devices {
@@ -1047,14 +883,14 @@ fn gpu_device_control(
         let changed = ui
             .add(
                 egui::DragValue::new(selected_id)
-                    .prefix("GPU Device ID: ")
+                    .prefix(lang.text("GPU Device ID: "))
                     .range(0..=i32::MAX as u32),
             )
             .changed();
-        ui.small(format!("GPU enumeration failed: {error}"));
+        ui.small(format!("{}: {error}", lang.text("GPU enumeration failed")));
         changed
     } else {
-        ui.label("Detecting CUDA devices...");
+        ui.label(lang.text("Detecting CUDA devices..."));
         false
     }
 }
@@ -1074,10 +910,11 @@ enum ModelKind {
 }
 
 fn model_path_control(ui: &mut egui::Ui, label: &str, value: &mut String) -> (bool, bool) {
+    let lang = ui_text::language(ui);
     let browse_clicked = ui
         .horizontal(|ui| {
             ui.label(label);
-            ui.button("Browse").clicked()
+            ui.button(lang.text("Browse")).clicked()
         })
         .inner;
     let available_width = ui.available_width();
@@ -1088,9 +925,12 @@ fn model_path_control(ui: &mut egui::Ui, label: &str, value: &mut String) -> (bo
 }
 
 fn backend_combo(ui: &mut egui::Ui, label: &str, value: &mut String, changed: &mut bool) {
+    let lang = ui_text::language(ui);
     // The stored value stays a canonical cpal HostId token (`wasapi`/`asio`/...)
     // for config + mapping stability; only the shown text is user-facing.
-    egui::ComboBox::from_label(label)
+    egui::ComboBox::new(label, lang.text(label))
+        .width((ui.available_width() - 120.0).clamp(90.0, 280.0))
+        .truncate()
         .selected_text(gui_host_label(value))
         .show_ui(ui, |ui| {
             for name in gui_host_names() {
@@ -1107,16 +947,23 @@ fn device_combo(
     value: &mut String,
     names: &[String],
     changed: &mut bool,
+    show_label: bool,
 ) {
-    egui::ComboBox::from_label(label)
+    let lang = ui_text::language(ui);
+    let combo = if show_label {
+        egui::ComboBox::new(label, lang.text(label))
+    } else {
+        egui::ComboBox::from_id_salt(label)
+    };
+    combo
         .selected_text(if value.is_empty() {
-            "System default"
+            lang.text("System default")
         } else {
             value.as_str()
         })
         .show_ui(ui, |ui| {
             *changed |= ui
-                .selectable_value(value, String::new(), "System default")
+                .selectable_value(value, String::new(), lang.text("System default"))
                 .changed();
             for name in names {
                 *changed |= ui.selectable_value(value, name.clone(), name).changed();
@@ -1125,31 +972,16 @@ fn device_combo(
 }
 
 fn metric(ui: &mut egui::Ui, label: &str, value: impl ToString) {
-    ui.label(label);
-    ui.monospace(value.to_string());
+    let lang = ui_text::language(ui);
+    ui.label(lang.text(label));
+    ui.monospace(lang.text(&value.to_string()));
     ui.end_row();
 }
 
 fn colored_metric(ui: &mut egui::Ui, label: &str, value: impl ToString, color: egui::Color32) {
-    ui.colored_label(color, label);
+    ui.colored_label(color, ui_text::language(ui).text(label));
     ui.colored_label(color, egui::RichText::new(value.to_string()).monospace());
     ui.end_row();
-}
-
-fn rms_metric(ui: &mut egui::Ui, label: &str, rms: f32) {
-    colored_metric(ui, label, format!("{rms:.6}"), rms_color(rms));
-}
-
-fn rms_color(rms: f32) -> egui::Color32 {
-    if !rms.is_finite() || rms > RMS_HIGH_MAX {
-        egui::Color32::LIGHT_RED
-    } else if rms < RMS_HEALTHY_MIN {
-        egui::Color32::GRAY
-    } else if rms > RMS_HEALTHY_MAX {
-        egui::Color32::YELLOW
-    } else {
-        egui::Color32::LIGHT_GREEN
-    }
 }
 
 fn inference_color(inference_us: u64, chunk_ms: u32) -> Option<egui::Color32> {
@@ -1178,6 +1010,26 @@ fn settings_path() -> Result<PathBuf, String> {
         .ok_or_else(|| "APPDATA is not set; GUI settings cannot be persisted".to_string())
 }
 
+fn discover_support_models(settings: &mut GuiSettings) -> bool {
+    let mut roots = Vec::new();
+    if let Ok(dir) = model_setup::cache_dir() {
+        roots.push(dir);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            roots.push(parent.join("assets"));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd.join("assets"));
+    }
+    let embedder =
+        model_setup::discover(&mut settings.embedder, model_setup::MODELS[0].file, &roots);
+    let f0 = model_setup::discover(&mut settings.f0_model, model_setup::MODELS[1].file, &roots);
+    let gtcrn = model_setup::discover_gtcrn(&mut settings.gtcrn_model_dir, &roots);
+    embedder || f0 || gtcrn
+}
+
 fn load_settings() -> (GuiSettings, Option<String>) {
     let Ok(path) = settings_path() else {
         return (
@@ -1186,7 +1038,7 @@ fn load_settings() -> (GuiSettings, Option<String>) {
         );
     };
     if !path.exists() {
-        return (GuiSettings::default(), None);
+        return (GuiSettings::new_user(), None);
     }
     match fs::read_to_string(&path)
         .map_err(|e| e.to_string())
@@ -1202,11 +1054,36 @@ fn load_settings() -> (GuiSettings, Option<String>) {
 
 fn save_settings(settings: &GuiSettings) -> Result<(), String> {
     let path = settings_path()?;
+    save_settings_at(settings, &path)
+}
+
+fn save_settings_at(settings: &GuiSettings, path: &Path) -> Result<(), String> {
+    use std::io::Write;
     fs::create_dir_all(path.parent().unwrap())
         .map_err(|e| format!("Failed to create settings directory: {e}"))?;
     let text = toml::to_string_pretty(settings)
         .map_err(|e| format!("Failed to serialize settings: {e}"))?;
-    fs::write(&path, text).map_err(|e| format!("Failed to save {}: {e}", path.display()))
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let temporary = path.with_extension(format!("{}.{nonce}.tmp", std::process::id()));
+    // A failed write must not destroy the previous tutorial/consent record.
+    // Rename is on the same filesystem and happens only after flush succeeds.
+    let result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(|e| format!("Failed to save {}: {e}", path.display()))
 }
 
 fn parse_provider(value: &str) -> Result<Provider, String> {
@@ -1324,6 +1201,17 @@ fn gpu_priority_names() -> &'static [&'static str] {
 // config string the dropdown stores.
 fn default_provider_name() -> &'static str {
     vc_core::default_provider().label()
+}
+
+fn gui_provider_visible(provider: Provider) -> bool {
+    !(cfg!(feature = "windowsml") && provider == Provider::Cpu)
+}
+
+fn gui_provider_label(provider: &str) -> &str {
+    match provider {
+        "cpu" | "windowsml-cpu" => "CPU",
+        _ => provider,
+    }
 }
 
 #[cfg(test)]
@@ -1516,16 +1404,6 @@ passthrough = true
         };
         settings.normalize_gui_managed_settings();
         assert_eq!(settings.provider, "tensorrt");
-    }
-
-    #[test]
-    fn rms_colors_distinguish_silence_healthy_and_excessive_levels() {
-        assert_eq!(rms_color(0.0), egui::Color32::GRAY);
-        assert_eq!(rms_color(0.005), egui::Color32::GRAY);
-        assert_eq!(rms_color(0.03), egui::Color32::LIGHT_GREEN);
-        assert_eq!(rms_color(0.15), egui::Color32::YELLOW);
-        assert_eq!(rms_color(0.30), egui::Color32::LIGHT_RED);
-        assert_eq!(rms_color(f32::NAN), egui::Color32::LIGHT_RED);
     }
 
     #[test]

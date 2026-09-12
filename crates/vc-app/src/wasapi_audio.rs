@@ -78,6 +78,14 @@ impl Drop for WasapiStream {
     }
 }
 
+impl WasapiStream {
+    pub(crate) fn has_finished(&self) -> bool {
+        self.handle
+            .as_ref()
+            .is_some_and(|handle| handle.is_finished())
+    }
+}
+
 pub fn print_devices() -> Result<()> {
     let _com = ComGuard::initialize()?;
     let enumerator =

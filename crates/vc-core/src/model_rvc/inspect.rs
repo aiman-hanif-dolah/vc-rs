@@ -5,6 +5,18 @@ use tracing::info;
 
 use super::onnx_meta::{read_model_io, RvcIoNames, StreamFormat};
 
+/// Structural validation without constructing an inference session. Used for
+/// user-supplied support files during setup; role compatibility is still checked
+/// by the shared pipeline when preview starts.
+pub fn validate_onnx_model(path: &Path) -> Result<()> {
+    let io = read_model_io(path)?;
+    anyhow::ensure!(
+        !io.inputs.is_empty() && !io.outputs.is_empty(),
+        "ONNX model has no inputs or outputs"
+    );
+    Ok(())
+}
+
 #[cfg(feature = "ort")]
 use super::sessions::{describe_value_type, load_session};
 #[cfg(feature = "ort")]
@@ -208,4 +220,11 @@ pub(super) fn inspect_rvc_model(path: &Path) -> Result<RvcModelInfo> {
         rvc_sample_rate,
         stream,
     })
+}
+
+/// Structural preflight for model pickers, without loading a GPU runtime.
+/// Call on a worker: the shared inspector reads the entire ONNX file. Success
+/// establishes the RVC contract, not provider compatibility or successful audio.
+pub fn validate_rvc_model(path: &Path) -> Result<()> {
+    inspect_rvc_model(path).map(|_| ())
 }

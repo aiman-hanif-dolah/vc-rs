@@ -79,7 +79,7 @@ Windows (x64). There are four, depending on your front-end and hardware:
 
 ### All packages: model files
 
-`vc-rs` does not ship models. You supply three:
+`vc-rs` does not ship models. It uses three: choose your voice model and fetch the support models from the GUI.
 
 1. **RVC voice conversion model** (`.onnx`) — the target voice. **Only ONNX is
    supported**; `.pth` cannot be loaded directly, but picking a `.pth` in the
@@ -89,18 +89,28 @@ Windows (x64). There are four, depending on your front-end and hardware:
 2. **Embedder model** (ContentVec, `content_vec_500.onnx`)
 3. **F0 model** (RMVPE, `rmvpe.onnx`)
 
-Items 2 and 3 can be fetched with the bundled `download-models.ps1` (see below).
+Items 2 and 3 are downloaded and configured together with **Download required models** in the GUI.
 
 ## Usage (GUI)
 
 1. Extract the downloaded zip (**keep the DLLs in the same folder as
    `vc-gui.exe`**).
-2. Fetch the embedder and F0 models (see *Prepare models* below).
-3. Launch `vc-gui.exe`.
+2. Choose a language and review the applicable app and processing-component terms.
+3. Check the microphone meter and adjust **Microphone volume**. Use **Play test sound** to check the output independently, or **Hear my voice** with headphones. Noise reduction is optional.
+4. Choose or drop an RVC `.onnx` / `.pth` voice model. Supported checkpoints can be converted in the app.
+5. Review and prepare missing ContentVec/RMVPE files and processing components. Verified files are reused and locations are configured automatically.
+   When ready, choose **Open main screen** to save and finish setup. Start voice conversion from the normal screen.
+
+The tutorial can be skipped from audio setup onward and reopened from **Setup**. Skipping is separate from consent and setup completion. Interrupted setup resumes its saved step without automatically restarting playback or downloads. See [the tutorial design](docs/onboarding.md).
+The normal screen provides voice, input/output, volume and pitch controls once. Start becomes Restart / Stop while running. Language is at the bottom left; Setup reopens the tutorial. See [normal screen behavior](docs/normal-screen.md).
 
 ### Prepare models
 
-Fetch the embedder and F0 models (run from the extracted folder):
+The GUI downloads about 741 MB directly from the upstream host (GPL-3.0), with progress, cancellation and retry. Files are checked against pinned sizes and SHA-256 hashes before use.
+Models are saved in `%LOCALAPPDATA%\vc-rs\models` (falling back to `%APPDATA%\vc-rs\models`) and reused across launches and app updates.
+Existing selections and support models in the `assets` folder beside the executable are also reused. You still supply your own voice model.
+
+Alternatively, use the bundled script from the extracted folder:
 
 ```powershell
 pwsh .\download-models.ps1
@@ -116,24 +126,11 @@ still supply your own RVC voice model (`.onnx`).
 
 ### Working in the window
 
-1. **Models** — **Browse** for the RVC model, embedder (ContentVec), and F0
-   (RMVPE) `.onnx` files.
-2. **Provider** — choose the backend (windowsml package: `windowsml` /
-   `windowsml-directml` / `windowsml-nvtrtx` / `windowsml-cpu` / `cpu`; tensorrt
-   package: `tensorrt`). **GPU Priority** and the CUDA/TensorRT
-   **GPU Device ID** are selectable too.
-3. **Audio** — pick the input/output devices (**Refresh devices** to re-scan).
-   Leave blank to use "System default".
-4. **Engine configuration** — set **Chunk ms** / **Extra convert ms** (see
-   *Tuning real-time settings*).
-5. Press **Apply / Start** to apply and start. **Model / Provider / device /
-   Chunk edits do not take effect until you press it.** **Stop** stops the
-   engine.
-6. **Live parameters** (Pitch shift / Speaker ID / Input gain / Output gain)
-   apply in real time.
-7. **Telemetry** shows inference time, input/output RMS, and overruns/underruns
-   so you can watch for dropouts and load (inference time is color-flagged when
-   it exceeds the chunk budget).
+- **Model settings**: downloaded ContentVec / RMVPE or custom paths; Browse appears for custom selections.
+- **Audio devices and noise reduction**: hosts, device refresh and denoiser-specific controls.
+- **Backend Details**: available backends, GPU selection/priority, Chunk ms / Extra convert ms, metrics and diagnostics.
+
+Gain and pitch update live. Reload-scoped changes show a Restart reminder beside transport.
 
 Settings are saved automatically (`%APPDATA%\vc-rs\gui.toml`) and restored on the
 next launch. When all three models are loaded, **Passthrough** switches live at
@@ -161,9 +158,9 @@ GTCRN is an ultra-light (~48K-parameter) speech-enhancement model that runs in
 real time with large margin. It ships in the **standalone CLI/GUI packages**:
 Windows ML runs the tiny graph on ORT CPU, while TensorRT runs it through native
 TensorRT. VST3 does not include it. Its fixed delay is ~48 ms (the 16 kHz STFT
-reconstruction plus the adapter FIFO). Fetch the model with
-`download-models.ps1 -Gtcrn` into `assets\gtcrn\`, then point the GUI's **GTCRN
-model dir** or the CLI's `--gtcrn-model <dir>` at it.
+reconstruction plus the adapter FIFO). In the GUI, select **Audio devices and noise reduction → Input denoiser → gtcrn → Download GTCRN**.
+The official 352 KB model (MIT) is verified and saved alongside its license in `%LOCALAPPDATA%\vc-rs\models\gtcrn`; its directory is configured automatically. Press **Apply / Start** to activate it.
+You can also choose an existing **GTCRN model dir**, or use `download-models.ps1 -Gtcrn` to fetch it into `assets\gtcrn\` for the CLI's `--gtcrn-model <dir>`.
 
 ## Tuning real-time settings
 

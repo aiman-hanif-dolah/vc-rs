@@ -467,6 +467,9 @@ Copy-Item -LiteralPath (Join-Path $appStage 'LICENSE') -Destination (Join-Path $
 Copy-Item -LiteralPath (Join-Path $appStage 'licenses\THIRD-PARTY-LICENSES-vc-gui.md') -Destination (Join-Path $msixStage 'licenses\THIRD-PARTY-LICENSES-vc-gui.md') -Force
 Copy-Item -LiteralPath (Join-Path $appStage 'licenses\THIRD-PARTY-NOTICES.md') -Destination (Join-Path $msixStage 'licenses\THIRD-PARTY-NOTICES.md') -Force
 Copy-Item -LiteralPath (Join-Path $appStage 'licenses\WindowsAppSDK-LICENSE.txt') -Destination (Join-Path $msixStage 'licenses\WindowsAppSDK-LICENSE.txt') -Force
+foreach ($tutorialLicense in @('WindowsAppSDK-Onboarding.txt', 'ONBOARDING-COMPONENTS.md')) {
+    Copy-Item -LiteralPath (Join-Path $appStage "licenses\$tutorialLicense") -Destination (Join-Path $msixStage "licenses\$tutorialLicense") -Force
+}
 
 $optionalOnnxLicense = Join-Path $appStage 'licenses\onnxruntime.LICENSE.txt'
 if (Test-Path -LiteralPath $optionalOnnxLicense) {

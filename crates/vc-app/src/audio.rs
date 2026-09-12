@@ -261,6 +261,18 @@ pub enum AudioStream {
 }
 
 impl AudioStream {
+    /// Test sessions stop output on device errors; inspect before report_errors
+    /// consumes CPAL counters. This runs on the control thread only.
+    pub(crate) fn has_error(&self) -> bool {
+        match self {
+            Self::Cpal(stream) => stream.errors.counts.iter().enumerate().any(|(i, count)| {
+                ERROR_KINDS[i] != cpal::ErrorKind::Xrun && count.load(Ordering::Relaxed) > 0
+            }),
+            #[cfg(windows)]
+            Self::Wasapi(stream) => stream.has_finished(),
+        }
+    }
+
     pub fn play(&self) -> Result<()> {
         match self {
             AudioStream::Cpal(stream) => stream
@@ -273,6 +285,70 @@ impl AudioStream {
             AudioStream::Wasapi(stream) => stream.play(),
         }
     }
+}
+
+/// Independent endpoints for device diagnostics. Unlike RealtimeAudio::open,
+/// failure in one direction must not prevent testing the other direction.
+pub(crate) fn test_input<F>(
+    host: AudioHost,
+    name: Option<&str>,
+    exclusive: bool,
+    buffer_ms: u32,
+    callback: F,
+) -> Result<(AudioStream, u32)>
+where
+    F: FnMut(&[f32]) + Send + 'static,
+{
+    if let Some(name) = name {
+        if !cpal_input_names(host)?
+            .iter()
+            .any(|candidate| candidate == name)
+        {
+            bail!("Selected microphone is unavailable. Choose a microphone again.");
+        }
+    }
+    let (endpoint, rate, _) = open_input_endpoint(host, name, exclusive, buffer_ms)?;
+    let stream = match endpoint {
+        InputEndpoint::Cpal { device, config } => {
+            AudioStream::Cpal(build_cpal_input_stream(&device, &config, callback)?)
+        }
+        #[cfg(windows)]
+        InputEndpoint::Wasapi(config) => {
+            AudioStream::Wasapi(wasapi_audio::build_input_stream(config, callback)?)
+        }
+    };
+    Ok((stream, rate))
+}
+
+pub(crate) fn test_output<F>(
+    host: AudioHost,
+    name: Option<&str>,
+    exclusive: bool,
+    buffer_ms: u32,
+    callback: F,
+) -> Result<(AudioStream, u32)>
+where
+    F: FnMut(&mut [f32]) + Send + 'static,
+{
+    if let Some(name) = name {
+        if !cpal_output_names(host)?
+            .iter()
+            .any(|candidate| candidate == name)
+        {
+            bail!("Selected output is unavailable. Choose an output again.");
+        }
+    }
+    let (endpoint, rate, _) = open_output_endpoint(host, name, exclusive, buffer_ms)?;
+    let stream = match endpoint {
+        OutputEndpoint::Cpal { device, config } => {
+            AudioStream::Cpal(build_cpal_output_stream(&device, &config, callback)?)
+        }
+        #[cfg(windows)]
+        OutputEndpoint::Wasapi(config) => {
+            AudioStream::Wasapi(wasapi_audio::build_output_stream(config, callback)?)
+        }
+    };
+    Ok((stream, rate))
 }
 
 impl AudioStream {

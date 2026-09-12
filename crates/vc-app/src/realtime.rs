@@ -27,6 +27,10 @@ const INPUT_QUEUE_CHUNKS: usize = 4;
 const OUTPUT_QUEUE_CHUNKS: usize = 4;
 const COMMAND_CAPACITY: usize = 8;
 
+mod device_test;
+use device_test::DeviceTestSession;
+pub use device_test::{DeviceTestConfig, DeviceTestSnapshot, TestOutput};
+
 /// OS audio host / API. Modelled on cpal's `HostId` (the canonical serialized
 /// tokens match: `wasapi`/`asio`/`coreaudio`/`alsa`/`jack`), so the same enum
 /// works across platforms. Every variant is always defined — selecting one that
@@ -340,6 +344,9 @@ pub enum EngineState {
 
 #[derive(Clone, Debug, Default)]
 pub struct EngineStatusSnapshot {
+    /// Changes only after a newly requested conversion session starts. Frontends
+    /// must not confirm a preview using a stale Running snapshot from its predecessor.
+    pub session_revision: u64,
     pub state: EngineState,
     pub message: String,
     pub detail: Option<String>,
@@ -428,6 +435,7 @@ impl Telemetry {
 // on every push. Kept inline so the worker's command path stays allocation-free.
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    DeviceTest(DeviceTestConfig),
     Apply(RealtimeConfig),
     Stop,
     // (input_host, output_host): inputs are enumerated from the input host and
@@ -437,6 +445,7 @@ enum Command {
 }
 
 pub struct EngineController {
+    test_snapshot: Arc<Mutex<DeviceTestSnapshot>>,
     tx: SyncSender<Command>,
     status: Arc<Mutex<EngineStatusSnapshot>>,
     devices: Arc<Mutex<DeviceList>>,
@@ -454,19 +463,32 @@ impl EngineController {
         let telemetry = Arc::new(Telemetry::default());
         let live = Arc::new(AtomicLiveParams::new(initial_live));
         let passthrough = Arc::new(AtomicBool::new(false));
+        let test_snapshot = Arc::new(Mutex::new(DeviceTestSnapshot::default()));
         let control = {
             let status = Arc::clone(&status);
             let devices = Arc::clone(&devices);
             let telemetry = Arc::clone(&telemetry);
             let live = Arc::clone(&live);
             let passthrough = Arc::clone(&passthrough);
+            let test_snapshot = Arc::clone(&test_snapshot);
             thread::Builder::new()
                 .name("vc-app-control".to_string())
                 .stack_size(64 * 1024 * 1024)
-                .spawn(move || control_loop(rx, status, devices, telemetry, live, passthrough))
+                .spawn(move || {
+                    control_loop(
+                        rx,
+                        status,
+                        devices,
+                        telemetry,
+                        live,
+                        passthrough,
+                        test_snapshot,
+                    )
+                })
                 .expect("failed to spawn vc-app control thread")
         };
         Self {
+            test_snapshot,
             tx,
             status,
             devices,
@@ -480,6 +502,18 @@ impl EngineController {
     pub fn apply_config(&self, config: RealtimeConfig) -> Result<()> {
         config.validate()?;
         self.try_command(Command::Apply(config))
+    }
+
+    /// Starts/reconfigures model-free diagnostics, replacing any prior session.
+    pub fn start_device_test(&self, config: DeviceTestConfig) -> Result<()> {
+        self.try_command(Command::DeviceTest(config))
+    }
+
+    pub fn device_test_snapshot(&self) -> DeviceTestSnapshot {
+        self.test_snapshot
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default()
     }
 
     pub fn stop(&self) -> Result<()> {
@@ -528,11 +562,31 @@ fn control_loop(
     telemetry: Arc<Telemetry>,
     live: Arc<AtomicLiveParams>,
     passthrough: Arc<AtomicBool>,
+    test_snapshot: Arc<Mutex<DeviceTestSnapshot>>,
 ) {
     let mut session: Option<RealtimeSession> = None;
+    let mut test_session: Option<DeviceTestSession> = None;
+    let mut session_revision = 0_u64;
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Command::DeviceTest(config)) => {
+                drop(session.take());
+                drop(test_session.take());
+                telemetry.reset();
+                set_status(&status, EngineState::Stopped, "Stopped");
+                match DeviceTestSession::start(config, live.clone(), test_snapshot.clone()) {
+                    Ok(new_session) => test_session = Some(new_session),
+                    Err(error) => {
+                        *test_snapshot.lock().unwrap() = DeviceTestSnapshot {
+                            output_error: Some(format!("{error:#}")),
+                            ..Default::default()
+                        };
+                    }
+                }
+            }
             Ok(Command::Apply(config)) => {
+                drop(test_session.take());
+                *test_snapshot.lock().unwrap() = DeviceTestSnapshot::default();
                 passthrough.store(config.passthrough, Ordering::Relaxed);
                 set_status(&status, EngineState::Stopping, "Stopping previous session");
                 drop(session.take());
@@ -546,8 +600,10 @@ fn control_loop(
                     &status,
                 ) {
                     Ok(new_session) => {
+                        session_revision += 1;
                         if let Ok(mut current) = status.lock() {
                             *current = new_session.status();
+                            current.session_revision = session_revision;
                         }
                         session = Some(new_session);
                     }
@@ -555,6 +611,8 @@ fn control_loop(
                 }
             }
             Ok(Command::Stop) => {
+                drop(test_session.take());
+                *test_snapshot.lock().unwrap() = DeviceTestSnapshot::default();
                 set_status(&status, EngineState::Stopping, "Stopping");
                 drop(session.take());
                 set_status(&status, EngineState::Stopped, "Stopped");
@@ -567,6 +625,17 @@ fn control_loop(
             }
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
+        }
+        if test_session.as_ref().is_some_and(DeviceTestSession::failed) {
+            drop(test_session.take());
+            let mut state = test_snapshot.lock().unwrap();
+            state.active = false;
+            state.output = TestOutput::Silent;
+            state.rms = 0.0;
+            state.peak = 0.0;
+            state.output_error.get_or_insert_with(|| {
+                "Audio device disconnected or test worker stopped. Retry the device test.".into()
+            });
         }
         if let Some(session) = session.as_mut() {
             for stream in [&mut session.input_stream, &mut session.output_stream]
@@ -1234,6 +1303,7 @@ impl RealtimeSession {
             input_stream: Some(input_stream),
             output_stream: Some(output_stream),
             status: EngineStatusSnapshot {
+                session_revision: 0,
                 state: EngineState::Running,
                 message: format!(
                     "Running (in: {} / out: {})",

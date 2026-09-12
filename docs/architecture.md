@@ -428,6 +428,22 @@ callbacks are realtime-safe sample movers, while the worker is the only place
 that may spend time on inference, smoothing, diagnostics, and file-oriented
 debug output.
 
+## Standalone device diagnostics
+
+The GUI tutorial uses `EngineController::start_device_test` before selecting any
+models. Its request carries endpoints and a silent/tone/monitor mode, never a
+model or inference provider. The controller exclusively owns either that test
+session or the normal realtime conversion session. Independent endpoint opens
+allow output testing without a microphone and input measurement without output.
+
+Callbacks move samples through preallocated rings; a test worker performs
+pre-clip input-gain metering, tone generation, and monitoring through the shared
+`PassthroughProcessor`/resampler/RNNoise. Test telemetry is distinct from RVC's
+post-denoiser metrics. Reconfiguration drops streams and queues together, so
+old test audio cannot move to a new output device. No test saves audio or loads
+RVC/Windows ML/TensorRT. Setup ends after prerequisite preparation, with device testing stopped.
+Conversion starts explicitly on the normal screen through the existing shared path. See [the tutorial design](onboarding.md).
+
 ## WAV Mode
 
 WAV conversion passes a fresh `ChunkConverter` to the shared `convert_finite`.

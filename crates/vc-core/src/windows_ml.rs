@@ -395,6 +395,41 @@ pub fn provider_prepare_pending(provider: crate::Provider) -> bool {
     matches!(catalog_provider_requires_prepare(ep), Ok(true))
 }
 
+/// Explicit preparation for frontends that present download/terms before model
+/// loading. This shares registration and its process cache with RvcPipeline;
+/// callers must obtain consent before invoking it, never from an audio callback.
+pub fn prepare_provider(provider: crate::Provider) -> Result<()> {
+    ensure_initialized()?;
+    if let Some(ep) = provider.catalog_ep() {
+        if !try_register_catalog_ep(ep)? {
+            bail!("The selected execution provider is not available on this device");
+        }
+    } else if provider == crate::Provider::WindowsMl {
+        try_register_best_catalog_ep()?;
+    }
+    Ok(())
+}
+
+/// Read-only readiness check for setup. It never invokes EnsureReady. Auto
+/// selection may fall through multiple candidates, so every listed candidate
+/// that might need acquisition must be covered by the explicit prepare action.
+pub fn preparation_required(provider: crate::Provider) -> Result<bool> {
+    let entries = list_catalog_providers()?;
+    if let Some(ep) = provider.catalog_ep() {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.vc_provider == Some(ep))
+            .ok_or_else(|| {
+                anyhow!("The selected execution provider is not available on this device")
+            })?;
+        return Ok(entry.ready_state != CatalogReadyState::Ready);
+    }
+    Ok(provider == crate::Provider::WindowsMl
+        && entries.iter().any(|entry| {
+            entry.vc_provider.is_some() && entry.ready_state == CatalogReadyState::NotReady
+        }))
+}
+
 fn initialize() -> Result<BootstrapState, String> {
     initialize_inner().map_err(|err| format!("{err:#}"))
 }

@@ -41,7 +41,7 @@ pub use finite::{convert_finite, FiniteChunk, FiniteOutput};
 // Re-exported so the standalone front-ends can name the config when building
 // `RvcPipelineConfig`; the processor itself stays private to the engine.
 pub use f0_postprocess::F0PostprocessConfig;
-pub use inspect::inspect_model;
+pub use inspect::{inspect_model, validate_onnx_model, validate_rvc_model};
 pub use pipeline::{
     F0Config, LiveParams, LoadModelRole, LoadProgress, NoiseGateShaping, OutputDynamicsConfig,
     RvcPipeline, RvcPipelineConfig,
