@@ -52,6 +52,11 @@ impl VcGui {
             if busy {
                 ui.spinner();
             }
+            let status_color = if status.state == EngineState::Error {
+                egui::Color32::LIGHT_RED
+            } else {
+                ui.visuals().text_color()
+            };
             let state_label = format!("{:?}", status.state);
             // The normal running message only repeats the state and audio hosts.
             // Omit it here, but keep preparation progress and diagnostics visible.
@@ -59,12 +64,12 @@ impl VcGui {
                 || (running
                     && status.message.starts_with("Running (in: ")
                     && status.message.ends_with(')'));
-            ui.label(lang.text(&state_label));
+            ui.colored_label(status_color, lang.text(&state_label));
             if !status.message.is_empty() && !routine_message {
-                ui.label(ui_text::engine_message(
-                    lang,
-                    &friendly_status_message(&status.message),
-                ));
+                ui.colored_label(
+                    status_color,
+                    ui_text::engine_message(lang, &friendly_status_message(&status.message)),
+                );
             }
         });
         ui.horizontal_wrapped(|ui| {
@@ -210,12 +215,12 @@ impl VcGui {
                         self.performance_metrics_ui(ui, status);
                         egui::CollapsingHeader::new(lang.text("Error details")).show(ui, |ui| {
                             if let Some(detail) = &status.detail {
-                                ui.label(detail);
+                                ui.colored_label(egui::Color32::LIGHT_RED, detail);
                             } else {
                                 ui.label(lang.text("No engine error details."));
                             }
                             if let Some(error) = &devices.error {
-                                ui.label(error);
+                                ui.colored_label(egui::Color32::LIGHT_RED, error);
                             }
                         });
                     });
@@ -288,16 +293,28 @@ impl VcGui {
                 } else {
                     0.0
                 };
-                let db = if rms > 0.0 {
-                    format!("{:.1} dBFS", 20.0 * rms.log10())
+                let peak = if status.state != EngineState::Running {
+                    0.0
+                } else if input {
+                    self.telemetry.input_peak
                 } else {
-                    "−∞ dBFS".into()
+                    self.telemetry.output_peak
+                };
+                // RMS drives the bar length, but brief full-scale peaks must
+                // warn even when the average level is low. Match setup's -6 dB
+                // caution threshold without exposing technical meter numbers.
+                let color = if peak >= 1.0 {
+                    egui::Color32::LIGHT_RED
+                } else if peak >= 10.0_f32.powf(-6.0 / 20.0) {
+                    egui::Color32::YELLOW
+                } else {
+                    egui::Color32::LIGHT_GREEN
                 };
                 ui.add(
                     egui::ProgressBar::new(
                         ((20.0 * rms.max(0.000001).log10() + 60.0) / 60.0).clamp(0.0, 1.0),
                     )
-                    .text(format!("RMS: {db}")),
+                    .fill(color),
                 );
             },
         );

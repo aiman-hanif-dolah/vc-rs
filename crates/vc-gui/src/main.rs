@@ -955,20 +955,25 @@ fn device_combo(
     } else {
         egui::ComboBox::from_id_salt(label)
     };
-    combo
-        .selected_text(if value.is_empty() {
-            lang.text("System default")
-        } else {
-            value.as_str()
-        })
-        .show_ui(ui, |ui| {
-            *changed |= ui
-                .selectable_value(value, String::new(), lang.text("System default"))
-                .changed();
-            for name in names {
-                *changed |= ui.selectable_value(value, name.clone(), name).changed();
-            }
-        });
+    // An empty value follows the system default; only explicit device names
+    // can be missing from the latest enumeration. Preserve the saved selection.
+    let missing = !value.is_empty() && !names.contains(value);
+    let mut selected = egui::RichText::new(if value.is_empty() {
+        lang.text("System default")
+    } else {
+        value.as_str()
+    });
+    if missing {
+        selected = selected.color(egui::Color32::LIGHT_RED);
+    }
+    combo.selected_text(selected).show_ui(ui, |ui| {
+        *changed |= ui
+            .selectable_value(value, String::new(), lang.text("System default"))
+            .changed();
+        for name in names {
+            *changed |= ui.selectable_value(value, name.clone(), name).changed();
+        }
+    });
 }
 
 fn metric(ui: &mut egui::Ui, label: &str, value: impl ToString) {

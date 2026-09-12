@@ -377,6 +377,10 @@ pub struct TelemetrySnapshot {
     pub content_delay_samples: Option<u64>,
     pub input_rms: f32,
     pub output_rms: f32,
+    /// Device input peak after live gain, before clipping and denoising.
+    pub input_peak: f32,
+    /// Peak of the assembled output chunk sent to the device queue.
+    pub output_peak: f32,
     pub input_overruns: u64,
     pub output_underruns: u64,
     pub output_dropped_samples: u64,
@@ -393,6 +397,8 @@ struct Telemetry {
     content_delay_encoded: AtomicU64,
     input_rms_bits: AtomicU32,
     output_rms_bits: AtomicU32,
+    input_peak_bits: AtomicU32,
+    output_peak_bits: AtomicU32,
     input_overruns: AtomicU64,
     output_underruns: AtomicU64,
     output_dropped_samples: AtomicU64,
@@ -407,6 +413,8 @@ impl Telemetry {
         self.content_delay_encoded.store(0, Ordering::Relaxed);
         self.input_rms_bits.store(0, Ordering::Relaxed);
         self.output_rms_bits.store(0, Ordering::Relaxed);
+        self.input_peak_bits.store(0, Ordering::Relaxed);
+        self.output_peak_bits.store(0, Ordering::Relaxed);
         self.input_overruns.store(0, Ordering::Relaxed);
         self.output_underruns.store(0, Ordering::Relaxed);
         self.output_dropped_samples.store(0, Ordering::Relaxed);
@@ -424,6 +432,8 @@ impl Telemetry {
                 .checked_sub(1),
             input_rms: f32::from_bits(self.input_rms_bits.load(Ordering::Relaxed)),
             output_rms: f32::from_bits(self.output_rms_bits.load(Ordering::Relaxed)),
+            input_peak: f32::from_bits(self.input_peak_bits.load(Ordering::Relaxed)),
+            output_peak: f32::from_bits(self.output_peak_bits.load(Ordering::Relaxed)),
             input_overruns: self.input_overruns.load(Ordering::Relaxed),
             output_underruns: self.output_underruns.load(Ordering::Relaxed),
             output_dropped_samples: self.output_dropped_samples.load(Ordering::Relaxed),
@@ -1229,10 +1239,16 @@ impl RealtimeSession {
                             }
                         }
                         let process_start = Instant::now();
+                        let live_params = live.load();
+                        // Meter on the worker, using the same gain snapshot as
+                        // conversion. Never clip the input measurement: the GUI
+                        // must still warn when denoising hides an overloaded mic.
+                        let input_peak = sample_peak(&input_acc[..input_chunk])
+                            * live_params.input_gain.max(0.0);
                         let stats = model.process_chunk(
                             &input_acc[..input_chunk],
                             input_rate,
-                            &live.load(),
+                            &live_params,
                             passthrough_live.load(Ordering::Relaxed),
                             &mut prepared,
                         );
@@ -1272,6 +1288,12 @@ impl RealtimeSession {
                         worker_telemetry
                             .output_rms_bits
                             .store(stats.output_rms.to_bits(), Ordering::Relaxed);
+                        worker_telemetry
+                            .input_peak_bits
+                            .store(input_peak.to_bits(), Ordering::Relaxed);
+                        worker_telemetry
+                            .output_peak_bits
+                            .store(sample_peak(&prepared).to_bits(), Ordering::Relaxed);
                         let output_silent = stats.silent;
                         if capture_output {
                             if let Ok(mut samples) = worker_debug_output.lock() {
@@ -1476,8 +1498,35 @@ pub fn write_wav_mono(path: &Path, samples: &[f32], sample_rate: u32) -> Result<
     Ok(())
 }
 
+// Allocation-free scan of worker-owned buffers; audio samples are unchanged.
+fn sample_peak(samples: &[f32]) -> f32 {
+    samples
+        .iter()
+        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn peak_meter_detects_short_overloads_and_resets() {
+        let mut samples = [0.0; 100];
+        samples[42] = -1.2;
+        assert!(dsp::rms(&samples) < 0.2);
+        assert_eq!(sample_peak(&samples), 1.2);
+        assert_eq!(sample_peak(&[]), 0.0);
+        let telemetry = Telemetry::default();
+        telemetry
+            .input_peak_bits
+            .store(sample_peak(&samples).to_bits(), Ordering::Relaxed);
+        telemetry
+            .output_peak_bits
+            .store(0.75_f32.to_bits(), Ordering::Relaxed);
+        assert_eq!(telemetry.snapshot().input_peak, 1.2);
+        assert_eq!(telemetry.snapshot().output_peak, 0.75);
+        telemetry.reset();
+        assert_eq!(telemetry.snapshot().input_peak, 0.0);
+        assert_eq!(telemetry.snapshot().output_peak, 0.0);
+    }
     #[test]
     fn telemetry_distinguishes_unknown_and_zero_content_delay_and_resets() {
         let telemetry = super::Telemetry::default();
