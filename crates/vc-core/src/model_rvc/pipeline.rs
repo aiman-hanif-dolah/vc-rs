@@ -1615,8 +1615,9 @@ fn provider_needs_fixed_shape_profile(provider: Provider) -> bool {
 /// on a machine with TensorRT-RTX installed takes the dynamic-shape `load` path,
 /// passes no profile, and the session build fails with
 /// "Windows ML NvTensorRtRtx requires a fixed-shape profile". The catalog lookup
-/// is cached (OnceLock) and matches what `load_session` selects later, so the
-/// load-time routing decision and the session build stay in agreement.
+/// is cached (OnceLock) and matches `load_session`'s first candidate. If its
+/// session cannot be created, Auto retries DirectML/CPU with fresh sessions;
+/// those also accept the fixed input windows prepared by this load path.
 fn provider_drives_nvtrtx(provider: Provider) -> bool {
     if provider == Provider::WindowsMlNvTensorRtRtx {
         return true;

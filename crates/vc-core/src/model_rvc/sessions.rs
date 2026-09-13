@@ -1893,6 +1893,84 @@ pub(super) fn load_session(
     // cache whose on-destroy write fast-fails the process for those engines.
     disable_nvtrtx_runtime_cache: bool,
 ) -> Result<Session> {
+    #[cfg(all(windows, feature = "windowsml"))]
+    if provider == Provider::WindowsMl {
+        let catalog = crate::windows_ml::try_register_best_catalog_ep()
+            .map(|ep| ep.map(crate::windows_ml::CatalogExecutionProvider::vc_provider));
+        return load_windows_ml_auto(catalog, |candidate| {
+            load_session_once(
+                path,
+                candidate,
+                role,
+                tensor_rt_profile,
+                tensor_rt_run_mode,
+                tensor_rt_session_purpose,
+                disable_nvtrtx_runtime_cache,
+            )
+        });
+    }
+    load_session_once(
+        path,
+        provider,
+        role,
+        tensor_rt_profile,
+        tensor_rt_run_mode,
+        tensor_rt_session_purpose,
+        disable_nvtrtx_runtime_cache,
+    )
+}
+
+// Retry whole session creation, not just EP registration: a ready library may
+// still reject this model during compilation. Each attempt owns a fresh builder.
+// DirectML cannot share a session with another GPU/NPU EP (ORT API 24); catalog
+// sessions retain ORT's CPU fallback instead. This policy runs only at load time.
+#[cfg(all(feature = "ort", any(test, all(windows, feature = "windowsml"))))]
+fn load_windows_ml_auto<T>(
+    catalog: Result<Option<Provider>>,
+    mut attempt: impl FnMut(Provider) -> Result<T>,
+) -> Result<T> {
+    let mut failures = Vec::new();
+    let catalog = match catalog {
+        Ok(provider) => provider,
+        Err(err) => {
+            tracing::warn!(
+                "Windows ML Auto catalog registration failed: {err:#}; trying DirectML/CPU"
+            );
+            failures.push(format!("catalog registration: {err:#}"));
+            None
+        }
+    };
+    for candidate in catalog
+        .into_iter()
+        .chain([Provider::WindowsMlDirectMl, Provider::WindowsMlCpu])
+    {
+        match attempt(candidate) {
+            Ok(session) => return Ok(session),
+            Err(err) => {
+                tracing::warn!(
+                    "Windows ML Auto {} session failed: {err:#}",
+                    candidate.label()
+                );
+                failures.push(format!("{}: {err:#}", candidate.label()));
+            }
+        }
+    }
+    bail!(
+        "Windows ML Auto could not load the model: {}",
+        failures.join("; ")
+    )
+}
+
+#[cfg(feature = "ort")]
+fn load_session_once(
+    path: &Path,
+    provider: Provider,
+    role: ModelRole,
+    tensor_rt_profile: Option<&TensorRtSessionProfile>,
+    tensor_rt_run_mode: TensorRtRunMode,
+    tensor_rt_session_purpose: TensorRtSessionPurpose,
+    disable_nvtrtx_runtime_cache: bool,
+) -> Result<Session> {
     // CUDA consumes the selected device ID from the fixed-shape profile.
     // Windows ML consumes the same profile only for TensorRT-RTX shape options;
     // its adapter selection remains owned by Windows ML.
@@ -1969,72 +2047,7 @@ pub(super) fn load_session(
             }
         }
         Provider::WindowsMl => {
-            #[cfg(not(all(windows, feature = "windowsml")))]
-            {
-                bail!(
-                    "provider {} is unavailable in this build; rebuild on Windows with the `windowsml` feature for {}",
-                    provider.label(),
-                    path.display()
-                );
-            }
-            #[cfg(all(windows, feature = "windowsml"))]
-            {
-                // Auto Windows ML optimizes for "works with the platform runtime":
-                // catalog EP if present/preparable, then DirectML, then ORT's CPU fallback.
-                // Explicit windowsml-* providers below intentionally fail
-                // instead of silently changing the requested accelerator.
-                match crate::windows_ml::try_register_best_catalog_ep()? {
-                    Some(catalog_ep) => {
-                        // The NvTensorRtRtx (TensorRT-RTX) EP cannot be combined
-                        // with the DirectML EP in one session — ORT rejects it with
-                        // "DML EP can only be used with CPU EPs". With its
-                        // fixed-shape profile it covers the whole graph on its own,
-                        // so skip the DirectML fallback for it. Other catalog EPs
-                        // keep DirectML for ops they do not implement.
-                        let with_directml_fallback = catalog_ep
-                            != crate::windows_ml::CatalogExecutionProvider::NvTensorRtRtx;
-                        info!(
-                            "using Windows ML catalog EP {} ({}) for {}",
-                            catalog_ep.label(),
-                            if with_directml_fallback {
-                                "with DirectML/CPU fallback"
-                            } else {
-                                "no DirectML fallback; TensorRT-RTX covers the full graph"
-                            },
-                            path.display()
-                        );
-                        builder = with_windows_ml_catalog_ep(
-                            builder,
-                            catalog_ep,
-                            path,
-                            tensor_rt_profile,
-                            disable_nvtrtx_runtime_cache,
-                        )?;
-                        if with_directml_fallback {
-                            builder = builder
-                                .with_execution_providers([ep::DirectML::default().build()])
-                                .map_err(|err| {
-                                    anyhow!(
-                                        "failed to configure Windows ML DirectML fallback EP: {err}"
-                                    )
-                                })?;
-                        }
-                    }
-                    None => {
-                        info!(
-                            "no usable Windows ML catalog EP found; using DirectML/CPU fallback for {}",
-                            path.display()
-                        );
-                        builder = builder
-                            .with_execution_providers([ep::DirectML::default().build()])
-                            .map_err(|err| {
-                                anyhow!(
-                                    "failed to configure Windows ML DirectML/CPU fallback EP: {err}"
-                                )
-                            })?;
-                    }
-                }
-            }
+            bail!("Windows ML Auto must use the session retry path");
         }
         Provider::WindowsMlNvTensorRtRtx
         | Provider::WindowsMlOpenVino
@@ -2177,5 +2190,96 @@ pub(super) fn describe_value_type(value_type: &ValueType) -> String {
     match value_type {
         ValueType::Tensor { ty, shape, .. } => format!("{ty:?} {shape}"),
         other => format!("{other:?}"),
+    }
+}
+
+#[cfg(all(test, feature = "ort"))]
+mod windows_ml_auto_tests {
+    use super::*;
+
+    #[test]
+    fn windows_ml_auto_stops_after_first_success_for_each_catalog_ep() {
+        for catalog in [
+            Provider::WindowsMlOpenVino,
+            Provider::WindowsMlMiGraphX,
+            Provider::WindowsMlVitisAi,
+            Provider::WindowsMlNvTensorRtRtx,
+            Provider::WindowsMlQnn,
+        ] {
+            let mut calls = Vec::new();
+            let selected = load_windows_ml_auto(Ok(Some(catalog)), |candidate| {
+                calls.push(candidate);
+                Ok(candidate)
+            })
+            .unwrap();
+            assert_eq!(selected, catalog);
+            // A successful catalog session must never append DirectML.
+            assert_eq!(calls, [catalog]);
+        }
+    }
+
+    #[test]
+    fn windows_ml_auto_retries_failed_model_commit_with_directml_then_cpu() {
+        for successful in [Provider::WindowsMlDirectMl, Provider::WindowsMlCpu] {
+            let mut calls = Vec::new();
+            let selected =
+                load_windows_ml_auto(Ok(Some(Provider::WindowsMlMiGraphX)), |candidate| {
+                    calls.push(candidate);
+                    if candidate == successful {
+                        Ok(candidate)
+                    } else {
+                        bail!("model compilation failed")
+                    }
+                })
+                .unwrap();
+            assert_eq!(selected, successful);
+            let expected = if successful == Provider::WindowsMlDirectMl {
+                vec![Provider::WindowsMlMiGraphX, Provider::WindowsMlDirectMl]
+            } else {
+                vec![
+                    Provider::WindowsMlMiGraphX,
+                    Provider::WindowsMlDirectMl,
+                    Provider::WindowsMlCpu,
+                ]
+            };
+            assert_eq!(calls, expected);
+        }
+    }
+
+    #[test]
+    fn windows_ml_auto_handles_missing_or_broken_catalog() {
+        for catalog in [Ok(None), Err(anyhow!("catalog unavailable"))] {
+            let mut calls = Vec::new();
+            let selected = load_windows_ml_auto(catalog, |candidate| {
+                calls.push(candidate);
+                Ok(candidate)
+            })
+            .unwrap();
+            assert_eq!(selected, Provider::WindowsMlDirectMl);
+            assert_eq!(calls, [Provider::WindowsMlDirectMl]);
+        }
+    }
+
+    #[test]
+    fn windows_ml_auto_reports_all_failures() {
+        let error =
+            load_windows_ml_auto::<()>(Ok(Some(Provider::WindowsMlOpenVino)), |candidate| {
+                Err(anyhow!("{} model commit rejected", candidate.label()))
+            })
+            .unwrap_err()
+            .to_string();
+        for provider in [
+            Provider::WindowsMlOpenVino,
+            Provider::WindowsMlDirectMl,
+            Provider::WindowsMlCpu,
+        ] {
+            assert!(error.contains(&format!("{} model commit rejected", provider.label())));
+        }
+        let error = load_windows_ml_auto::<()>(Err(anyhow!("catalog unavailable")), |_| {
+            Err(anyhow!("session failed"))
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("catalog unavailable"));
     }
 }
