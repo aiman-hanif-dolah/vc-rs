@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>vc-rs — RVC voice changer for Windows</title>
+  <meta name="description" content="A free, open-source RVC voice changer written in Rust. GUI, CLI and VST3 packages for Windows, with setup instructions and system requirements.">
+  <link rel="canonical" href="https://shirohata.github.io/vc-rs/en.html">
+  <link rel="alternate" hreflang="ja" href="https://shirohata.github.io/vc-rs/">
+  <link rel="alternate" hreflang="en" href="https://shirohata.github.io/vc-rs/en.html">
+  <script src="./language.js"></script>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="wrap header">
+    <a class="brand" href="./">vc-rs</a>
+    <nav aria-label="Main navigation">
+      <a href="#download">Downloads</a>
+      <a href="#start">Usage</a>
+      <a href="https://github.com/shirohata/vc-rs">GitHub</a>
+    </nav>
+    <nav class="languages" aria-label="Language">
+      <a href="./?lang=ja" lang="ja" hreflang="ja">日本語</a>
+      <a href="./en.html?lang=en" lang="en" hreflang="en" aria-current="page">English</a>
+    </nav>
+  </header>
+  <main id="main" class="wrap">
+    <section class="intro">
+      <p class="project-name">vc-rs</p>
+      <h1>RVC voice changer for Windows</h1>
+      <p class="lead">Convert microphone input or WAV files into another voice using an RVC model. Written in Rust, with a desktop GUI, a CLI and a VST3 plugin.</p>
+      <p class="meta">Windows x64 / Japanese & English UI / MIT License</p>
+      <div class="actions">
+        <a class="button" href="https://github.com/shirohata/vc-rs/releases/latest">Downloads</a>
+        <a class="button" href="https://github.com/shirohata/vc-rs">Source on GitHub</a>
+      </div>
+      <p class="note">Bring your own RVC voice model. Prebuilt downloads are available; no build required.</p>
+    </section>
+    <section class="section" id="features">
+      <h2>Features</h2>
+      <dl class="features">
+        <div><dt>Real-time conversion</dt><dd>The main screen brings together voice model, audio input/output, volume and pitch controls. Volume and pitch update live, and your settings are reused next time.</dd></div>
+        <div><dt>Model setup</dt><dd>Supports ONNX models and in-app conversion of supported RVC v2 / F0 .pth models. Download auxiliary models through Setup or “Model settings”, or select custom files.</dd></div>
+        <div><dt>WAV files and DAWs</dt><dd>Convert WAV files with the included CLI, or use the VST3 plugin inside your DAW.</dd></div>
+      </dl>
+    </section>
+    <section class="section" id="download">
+      <h2>Downloads and requirements</h2>
+      <p>Packages are available on <a href="https://github.com/shirohata/vc-rs/releases/latest">GitHub Releases</a>. For standalone use, start with the Windows ML GUI package.</p>
+      <div class="table-scroll" role="region" aria-label="Package comparison" tabindex="0">
+        <table>
+          <thead><tr><th scope="col">Package</th><th scope="col">Use and hardware</th><th scope="col">Requirements and notes</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Windows ML<small>GUI + CLI</small></th><td>Supports a range of GPUs, including non-NVIDIA hardware</td><td>Windows App SDK Runtime 2.1 or later</td></tr>
+            <tr><th scope="row">TensorRT<small>GUI + CLI</small></th><td>For NVIDIA GPUs</td><td>Requires an up-to-date NVIDIA driver. The download is about 1.9 GB; an engine must be built on first use.</td></tr>
+            <tr><th scope="row">VST3<small>Plugin</small></th><td>For use in a DAW</td><td>Windows ML and TensorRT variants are available. <a href="https://github.com/shirohata/vc-rs/blob/main/crates/vc-vst3/README.md">Setup guide</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <aside class="notice"><p>For the Windows ML GUI, choose <code>vc-rs-windowsml-…zip</code>. <a href="https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads">Download the runtime from Microsoft</a>.</p><p>Voice models are not included. The ContentVec and RMVPE auxiliary models can be downloaded from the GUI and total about 741 MB.</p></aside>
+    </section>
+    <section class="section" id="start">
+      <h2>Getting started</h2>
+      <ol class="steps">
+        <li><strong>Extract the ZIP and open vc-gui.exe</strong><p>Keep the DLLs in the same folder. On first launch, choose your language and review the terms of use.</p></li>
+        <li><strong>Set up your microphone and voice model</strong><p>Follow the setup guide to check audio input and output, then select an RVC model. Download any missing auxiliary models from the app.</p></li>
+        <li><strong>Finish preparation and open the main screen</strong><p>Once the required models and runtime components are ready, select “Open main screen” to save your settings. Conversion does not start at this point.</p></li>
+        <li><strong>Select “Start” on the main screen</strong><p>Listen to the converted audio and adjust volume and pitch. Changes that require a restart, such as model or device changes, are indicated at the top of the screen. Select “Restart” to apply them, or “Stop” to end conversion.</p></li>
+      </ol>
+      <p>Connection and denoising options are under “Audio devices and noise reduction”; GPU and latency settings are under “Backend Details”. Scroll to the bottom of the main screen to change the language or reopen Setup.</p>
+      <p><a href="https://github.com/shirohata/vc-rs/blob/main/README.en.md">Detailed instructions in the README</a></p>
+    </section>
+<section class="section faq"><div><h2>Frequently asked questions</h2></div><div><details><summary>Is it free?</summary><p>vc-rs is free, open-source software under the MIT License. Voice models and auxiliary models have their own terms of use.</p></details><details><summary>Are voice models included?</summary><p>No. Bring your own RVC voice model and check its terms of use. ContentVec and RMVPE auxiliary models can be downloaded from the app.</p></details><details><summary>Can I use any .pth model?</summary><p>The built-in converter supports RVC v2 / F0 models. Other models, such as v1, need to be converted to ONNX beforehand. See <a href="https://github.com/shirohata/vc-rs/blob/main/README.en.md">model requirements</a>.</p></details><details><summary>Can I use it with Discord or OBS?</summary><p>Route converted audio through a virtual audio device. Set the vc-rs output to its playback endpoint, then select the paired recording endpoint as the microphone in Discord or the audio input in OBS. Driver installation and configuration of the receiving app are manual.</p></details><details><summary>What if the audio stutters or is delayed?</summary><p>Adjust chunk size under “Backend Details” on the main screen. Start with stable settings, then reduce the chunk size to lower latency and select “Restart” to apply the change. Results depend on your GPU, model and configuration. <a href="https://github.com/shirohata/vc-rs/blob/main/README.en.md">Read the tuning guide.</a></p></details></div></section>
+
+  </main>
+  <footer class="wrap footer">
+    <span>vc-rs · Open source</span>
+    <nav aria-label="Project links">
+      <a href="https://github.com/shirohata/vc-rs/releases">Releases</a>
+      <a href="https://github.com/shirohata/vc-rs/issues">Report a bug</a>
+      <a href="https://github.com/shirohata/vc-rs/blob/main/LICENSE">License</a>
+      <a href="https://github.com/shirohata/vc-rs/blob/main/README.en.md" lang="en">English docs</a>
+    </nav>
+  </footer>
+</body>
+</html>

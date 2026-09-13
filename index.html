@@ -1,24 +1,88 @@
 <!doctype html>
-<html lang="en">
+<html lang="ja">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>vc-rs - Real-time RVC Voice Changer in Rust</title>
-  <meta name="description" content="vc-rs is a real-time RVC voice changer written in Rust for Windows audio, with ONNX Runtime, TensorRT, and CUDA support.">
+  <meta name="theme-color" content="#ffffff">
+  <title>vc-rs — Windows向け RVC音声変換アプリ</title>
+  <meta name="description" content="Rust製の無料・オープンソースRVC音声変換アプリ。Windows向けのGUI、CLI、VST3を配布しています。対応環境と使い始め方を紹介します。">
   <link rel="canonical" href="https://shirohata.github.io/vc-rs/">
+  <link rel="alternate" hreflang="ja" href="https://shirohata.github.io/vc-rs/">
+  <link rel="alternate" hreflang="en" href="https://shirohata.github.io/vc-rs/en.html">
+  <script src="./language.js"></script>
+  <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <main>
-    <h1>vc-rs</h1>
-    <p>
-      vc-rs is a real-time RVC voice changer written in Rust. It targets
-      low-latency Windows audio and supports accelerated inference through
-      ONNX Runtime, TensorRT, and CUDA.
-    </p>
-    <p>
-      View the source code, documentation, and setup instructions in the
-      <a href="https://github.com/shirohata/vc-rs">vc-rs GitHub repository</a>.
-    </p>
+  <a class="skip" href="#main">本文へ移動</a>
+  <header class="wrap header">
+    <a class="brand" href="./">vc-rs</a>
+    <nav aria-label="メインナビゲーション">
+      <a href="#download">ダウンロード</a>
+      <a href="#start">使い方</a>
+      <a href="https://github.com/shirohata/vc-rs">GitHub</a>
+    </nav>
+    <nav class="languages" aria-label="表示言語">
+      <a href="./?lang=ja" lang="ja" hreflang="ja" aria-current="page">日本語</a>
+      <a href="./en.html?lang=en" lang="en" hreflang="en">English</a>
+    </nav>
+  </header>
+  <main id="main" class="wrap">
+    <section class="intro">
+      <p class="project-name">vc-rs</p>
+      <h1>Windows向け RVC音声変換アプリ</h1>
+      <p class="lead">マイク入力やWAVファイルを、RVCモデルで別の声に変換するアプリです。Rustで実装しており、GUI・CLI・VST3プラグインを配布しています。</p>
+      <p class="meta">Windows x64 / 日本語・英語UI / MIT License</p>
+      <div class="actions">
+        <a class="button" href="https://github.com/shirohata/vc-rs/releases/latest">ダウンロード</a>
+        <a class="button" href="https://github.com/shirohata/vc-rs">GitHubでソースを見る</a>
+      </div>
+      <p class="note">声のRVCモデルは別途必要です。ソースからビルドせずに使えます。</p>
+    </section>
+    <section class="section" id="features">
+      <h2>できること</h2>
+      <dl class="features">
+        <div><dt>リアルタイム音声変換</dt><dd>通常画面で声のモデル・入出力・音量・ピッチをまとめて操作できます。音量とピッチは即時反映され、設定は次回起動時も使えます。</dd></div>
+        <div><dt>モデルの準備</dt><dd>ONNX形式に対応。対応するRVC v2 / F0の.pthモデルはアプリ内で変換できます。補助モデルはセットアップや「モデル関連の設定」から取得でき、カスタムファイルも指定できます。</dd></div>
+        <div><dt>WAV変換・DAWでの利用</dt><dd>同梱のCLIでWAVファイルを変換できます。DAW向けにはVST3版を用意しています。</dd></div>
+      </dl>
+    </section>
+    <section class="section" id="download">
+      <h2>ダウンロードと対応環境</h2>
+      <p>配布先は<a href="https://github.com/shirohata/vc-rs/releases/latest">GitHub Releases</a>です。単体で使う場合は、まずWindows MLのGUI版を選んでください。</p>
+      <div class="table-scroll" role="region" aria-label="配布パッケージの比較" tabindex="0">
+        <table>
+          <thead><tr><th scope="col">パッケージ</th><th scope="col">用途・環境</th><th scope="col">必要なもの・注意点</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Windows ML<small>GUI + CLI</small></th><td>NVIDIA以外を含む幅広いGPU向け</td><td>Windows App SDK Runtime 2.1以上</td></tr>
+            <tr><th scope="row">TensorRT<small>GUI + CLI</small></th><td>NVIDIA GPU向け</td><td>最新のNVIDIAドライバ。配布は約1.9GBで、初回にエンジン構築が必要です。</td></tr>
+            <tr><th scope="row">VST3<small>プラグイン</small></th><td>DAWで使う場合</td><td>Windows ML版・TensorRT版があります。<a href="https://github.com/shirohata/vc-rs/blob/main/crates/vc-vst3/README.md">導入ガイド</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <aside class="notice"><p>GUIのWindows ML版は <code>vc-rs-windowsml-…zip</code> を選んでください。<a href="https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads">ランタイムはこちら</a>から入手できます。</p><p>声のモデルは同梱していません。ContentVec・RMVPEの補助モデルはGUIから取得でき、合計約741MBです。</p></aside>
+    </section>
+    <section class="section" id="start">
+      <h2>使い始め方</h2>
+      <ol class="steps">
+        <li><strong>ZIPを展開し、vc-gui.exeを開く</strong><p>DLLは同じフォルダに置いたままにしてください。初回は表示言語を選び、利用条件を確認します。</p></li>
+        <li><strong>マイクと声のモデルを設定する</strong><p>セットアップの案内に沿って入出力を確認し、RVCモデルを選びます。不足する補助モデルはアプリから取得できます。</p></li>
+        <li><strong>準備を完了し、通常画面を開く</strong><p>必要なモデルや処理部品の準備ができたら、「通常画面へ」で設定を保存します。この時点では音声変換は始まりません。</p></li>
+        <li><strong>通常画面の「開始」で変換する</strong><p>変換音を聴きながら音量・ピッチを調整します。モデルやデバイスなど、再起動が必要な変更は画面上部に表示されます。「再起動」で反映し、「停止」で変換を終了します。</p></li>
+      </ol>
+      <p>接続方式やノイズ低減は「音声デバイス・ノイズ低減」、GPUや遅延の調整は「バックエンド詳細」にあります。言語の切り替えとセットアップの再開は、通常画面を下までスクロールすると表示されます。</p>
+      <p><a href="https://github.com/shirohata/vc-rs#使い方gui-版">READMEの詳しい使い方</a></p>
+    </section>
+<section class="section faq"><div><h2>よくある質問</h2></div><div><details><summary>無料で使えますか？</summary><p>vc-rs本体はMITライセンスの無料・オープンソースソフトウェアです。声のモデルや補助モデルには、それぞれの利用条件が適用されます。</p></details><details><summary>声のモデルは付属していますか？</summary><p>付属していません。利用条件を確認したRVC音声モデルをご用意ください。ContentVec・RMVPEの補助モデルはアプリから取得できます。</p></details><details><summary>すべての.pthモデルを使えますか？</summary><p>内蔵コンバータはRVC v2 / F0モデルに対応しています。v1などは事前のONNX変換が必要です。詳しくは<a href="https://github.com/shirohata/vc-rs#必要なもの">対応モデルの説明</a>をご確認ください。</p></details><details><summary>DiscordやOBSでも使えますか？</summary><p>仮想オーディオデバイスを経由して変換音を渡せます。vc-rsの出力を仮想デバイスの再生側に設定し、DiscordのマイクやOBSの音声入力には対応する録音側を選びます。ドライバの導入と接続先アプリの設定は手動です。</p></details><details><summary>音が途切れたり、遅れたりするときは？</summary><p>通常画面の「バックエンド詳細」でチャンクサイズを調整できます。まずは安定して動く設定を見つけ、その後に小さくして遅延を調整し、「再起動」で反映します。結果はGPUやモデル、設定で変わります。<a href="https://github.com/shirohata/vc-rs#リアルタイム設定の調整">設定ガイドをご覧ください。</a></p></details></div></section>
+
   </main>
+  <footer class="wrap footer">
+    <span>vc-rs · Open source</span>
+    <nav aria-label="関連リンク">
+      <a href="https://github.com/shirohata/vc-rs/releases">更新履歴</a>
+      <a href="https://github.com/shirohata/vc-rs/issues">不具合報告</a>
+      <a href="https://github.com/shirohata/vc-rs/blob/main/LICENSE">ライセンス</a>
+      <a href="https://github.com/shirohata/vc-rs/blob/main/README.en.md" lang="en">English docs</a>
+    </nav>
+  </footer>
 </body>
 </html>
