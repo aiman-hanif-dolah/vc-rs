@@ -2,6 +2,9 @@
 //! discovering models, or touching the user's persisted settings. Keep these
 //! tests below the eframe lifecycle: `VcGui::new` and `maybe_save` perform I/O.
 use super::*;
+#[cfg(any(feature = "windowsml", feature = "tensorrt"))]
+#[path = "backend_tests.rs"]
+mod backend_tests;
 use egui_kittest::{
     kittest::{NodeT, Queryable},
     Harness,
@@ -117,14 +120,49 @@ fn ui_normal_transport_pending_and_passthrough() {
         h.get_by_label(lang.text("Unapplied changes — Restart to apply."));
         h.get_by_label(lang.text("Passthrough")).click();
         h.run_steps(4);
+        assert!(h.state().app.settings.passthrough);
+        assert!(h.query_all_by_label(lang.text(text::PITCH)).count() > 0);
         assert!(h
             .query_all_by_label(lang.text(text::PITCH))
             .all(|node| node.accesskit_node().is_disabled()));
         h.get_by_label(lang.text("Restart")).click();
         h.run_steps(4);
         assert_eq!(h.state().app.onboarding.effects.start_requests, 2);
+        assert_eq!(h.state().app.onboarding.normal.expected_revision, 2);
+        assert!(h.state().app.onboarding.normal.requested.is_some());
+        assert!(h
+            .get_by_label(lang.text("Restart"))
+            .accesskit_node()
+            .is_disabled());
+        h.get_by_label(lang.text("Restart")).click();
+        h.run_steps(4);
+        assert_eq!(h.state().app.onboarding.effects.start_requests, 2);
+        // An old Running snapshot must not acknowledge the queued restart.
+        h.state_mut().status.state = EngineState::Starting;
+        h.state_mut().status.session_revision = 2;
+        h.run_steps(4);
+        assert!(h.state().app.onboarding.normal.requested.is_some());
+        h.state_mut().status.state = EngineState::Running;
+        h.run_steps(4);
+        assert!(h.state().app.onboarding.normal.requested.is_none());
+        assert_eq!(
+            h.state()
+                .app
+                .onboarding
+                .normal
+                .applied
+                .as_ref()
+                .unwrap()
+                .extra_convert_ms,
+            h.state().app.settings.extra_convert_ms
+        );
+        assert!(h
+            .query_by_label(lang.text("Unapplied changes — Restart to apply."))
+            .is_none());
         h.get_by_label(lang.text(text::STOP)).click();
         h.run_steps(4);
+        assert_eq!(h.state().app.onboarding.effects.stop_requests, 1);
+        assert!(h.state().app.onboarding.normal.applied.is_none());
         h.state_mut().status.state = EngineState::Stopped;
         h.run_steps(4);
         assert!(!h
@@ -137,22 +175,189 @@ fn ui_normal_transport_pending_and_passthrough() {
 #[test]
 fn ui_support_sources_preserve_custom_path_and_download_only_selected_role() {
     for lang in [text::Language::English, text::Language::Japanese] {
-        let mut h = harness(ready_main_fixture(lang));
-        h.get_by_label(lang.text("Model")).click();
+        for (index, label, reference) in [(0, "Embedder", "ContentVec"), (1, "F0 model", "RMVPE")] {
+            let mut h = harness(ready_main_fixture(lang));
+            h.get_by_label(lang.text("Model")).click();
+            h.run_steps(4);
+            let original = h.state().app.settings.embedder.clone();
+            // Combo controls have distinct labels even though both offer Custom.
+            h.get_by_label(lang.text(label)).click();
+            h.run_steps(2);
+            h.get_by_label(reference).click();
+            h.run_steps(4);
+            assert_eq!(h.state().app.settings.support_custom_paths[index], original);
+            assert_eq!(
+                h.state().app.settings.support_custom_mode[index],
+                "downloaded"
+            );
+            h.get_by_label(lang.text("Agree and download")).click();
+            h.run_steps(4);
+            assert_eq!(h.state().app.onboarding.effects.download_requests, 1);
+            assert_eq!(h.state().app.onboarding.effects.download_indices, [index]);
+            let saved = h.state().app.onboarding.effects.saved.last().unwrap();
+            assert_eq!(
+                if index == 0 {
+                    &saved.f0_model
+                } else {
+                    &saved.embedder
+                },
+                &original
+            );
+            let expected = h
+                .state()
+                .app
+                .onboarding
+                .effects
+                .support_cache_dir
+                .join(model_setup::MODELS[index].file);
+            assert_eq!(
+                if index == 0 {
+                    &saved.embedder
+                } else {
+                    &saved.f0_model
+                },
+                &expected.to_string_lossy()
+            );
+            h.get_by_label(lang.text(label)).click();
+            h.run_steps(2);
+            h.get_by_label(lang.text("Custom")).click();
+            h.run_steps(4);
+            let settings = &h.state().app.settings;
+            assert_eq!(
+                if index == 0 {
+                    &settings.embedder
+                } else {
+                    &settings.f0_model
+                },
+                &original
+            );
+        }
+    }
+}
+
+#[test]
+fn ui_small_screen_scroll_keeps_transport_and_reaches_language_and_setup() {
+    for lang in [text::Language::English, text::Language::Japanese] {
+        let mut h = harness_sized(ready_main_fixture(lang), egui::vec2(520.0, 480.0));
+        let start = h.get_by_label(lang.text(text::START)).rect();
+        h.get_by_label(lang.text("Backend Details")).scroll_to_me();
+        h.run_steps(8);
+        h.get_by_label(lang.text("Backend Details")).click();
         h.run_steps(4);
-        let original = h.state().app.settings.embedder.clone();
-        // Combo controls have distinct labels even though both offer Custom.
-        h.get_by_label(lang.text("Embedder")).click();
-        h.run_steps(2);
-        h.get_by_label("ContentVec").click();
+        h.get_by_label("Language / 言語").scroll_to_me();
+        h.run_steps(8);
+        assert_eq!(h.get_by_label(lang.text(text::START)).rect(), start);
+        h.get_by_label("Language / 言語").click();
         h.run_steps(4);
-        assert_eq!(h.state().app.settings.support_custom_paths[0], original);
-        assert_eq!(h.state().app.settings.support_custom_mode[0], "downloaded");
-        h.get_by_label(lang.text("Embedder")).click();
-        h.run_steps(2);
-        h.get_by_label(lang.text("Custom")).click();
+        let (choice, changed) = if lang == text::Language::English {
+            ("日本語", text::Language::Japanese)
+        } else {
+            ("English", text::Language::English)
+        };
+        h.get_by_label(choice).click();
         h.run_steps(4);
-        assert_eq!(h.state().app.settings.embedder, original);
+        assert_eq!(h.state().app.settings.language, changed);
+        h.get_by_label(changed.text(text::SETUP)).scroll_to_me();
+        h.run_steps(8);
+        let setup = h.get_by_label(changed.text(text::SETUP)).rect();
+        assert!(setup.min.y >= 20.0 && setup.max.y <= 460.0);
+        assert!(h.get_by_label(changed.text(text::START)).rect().min.y < setup.min.y);
+        h.get_by_label(changed.text(text::SETUP)).click();
+        h.run_steps(4);
+        assert_eq!(h.state().app.onboarding.step, Some(Step::Audio));
+    }
+}
+
+#[test]
+fn ui_stop_failure_keeps_applied_settings_and_shows_error() {
+    let mut h = harness(ready_main_fixture(text::Language::English));
+    h.get_by_label(text::START).click();
+    h.run_steps(4);
+    h.state_mut().status.state = EngineState::Running;
+    h.state_mut().status.session_revision = 1;
+    h.run_steps(4);
+    h.state_mut().app.onboarding.effects.stop_error = Some("Test stop failure".into());
+    h.get_by_label(text::STOP).click();
+    h.run_steps(4);
+    assert_eq!(h.state().app.onboarding.effects.stop_requests, 1);
+    assert!(h.state().app.onboarding.normal.applied.is_some());
+    h.get_by_label("Test stop failure");
+}
+
+#[test]
+fn ui_device_selection_orders_history_and_preserves_disconnected_devices() {
+    for lang in [text::Language::English, text::Language::Japanese] {
+        for input in [true, false] {
+            let mut fixture = ready_main_fixture(lang);
+            fixture.devices.inputs = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+            fixture.devices.outputs = fixture.devices.inputs.clone();
+            let settings = &mut fixture.app.settings;
+            if input {
+                settings.input_device = "Disconnected".into();
+                settings.recent_input_devices = vec!["C".into(), "Disconnected".into(), "B".into()];
+            } else {
+                settings.output_device = "Disconnected".into();
+                settings.recent_output_devices =
+                    vec!["C".into(), "Disconnected".into(), "B".into()];
+            }
+            let mut h = harness(fixture);
+            h.get_by_value("Disconnected").click();
+            h.run_steps(4);
+            // The disconnected selection remains displayed, but is not an option.
+            assert_eq!(h.query_all_by_label("Disconnected").count(), 0);
+            let mut previous_y = 0.0;
+            for name in ["C", "B", "A", "D"] {
+                let node = h.get_by_label(name); // also rejects duplicate rows
+                assert!(node.rect().min.y > previous_y);
+                previous_y = node.rect().min.y;
+            }
+            h.get_by_label("A").click();
+            h.run_steps(4);
+            let settings = &h.state().app.settings;
+            let (selected, history, other, other_history) = if input {
+                (
+                    &settings.input_device,
+                    &settings.recent_input_devices,
+                    &settings.output_device,
+                    &settings.recent_output_devices,
+                )
+            } else {
+                (
+                    &settings.output_device,
+                    &settings.recent_output_devices,
+                    &settings.input_device,
+                    &settings.recent_input_devices,
+                )
+            };
+            assert_eq!(selected, "A");
+            assert_eq!(history, &["A", "C", "Disconnected"]);
+            assert!(other.is_empty() && other_history.is_empty());
+            assert!(h.state().app.dirty_since.is_some());
+            // Reconnecting makes the remembered device selectable in MRU order.
+            if input {
+                h.state_mut().devices.inputs.push("Disconnected".into());
+            } else {
+                h.state_mut().devices.outputs.push("Disconnected".into());
+            }
+            h.get_by_value("A").click();
+            h.run_steps(4);
+            assert!(h.get_by_label("C").rect().min.y < h.get_by_label("Disconnected").rect().min.y);
+            assert!(h.get_by_label("Disconnected").rect().min.y < h.get_by_label("B").rect().min.y);
+            h.get_by_label("Disconnected").click();
+            h.run_steps(4);
+            h.get_by_value("Disconnected").click();
+            h.run_steps(4);
+            h.get_by_label(lang.text("System default")).click();
+            h.run_steps(4);
+            let settings = &h.state().app.settings;
+            let (selected, history) = if input {
+                (&settings.input_device, &settings.recent_input_devices)
+            } else {
+                (&settings.output_device, &settings.recent_output_devices)
+            };
+            assert!(selected.is_empty());
+            assert_eq!(history, &["Disconnected", "A", "C"]);
+        }
     }
 }
 
@@ -210,6 +415,9 @@ impl Fixture {
         settings.accepted_terms = terms::required(&settings);
         let mut onboarding = Onboarding::new(&settings);
         onboarding.step = step;
+        onboarding.effects.support_cache_dir =
+            std::env::temp_dir().join(format!("vc-gui-missing-cache-{}", std::process::id()));
+        assert!(!onboarding.effects.support_cache_dir.exists());
         onboarding.runtime_check = Some((
             settings.provider.clone(),
             Arc::new(Mutex::new(Some(Ok(())))),
@@ -223,9 +431,8 @@ impl Fixture {
         ));
         Self {
             app: VcGui {
-                // The idle controller only waits for commands. Never click Start
-                // with valid models or Refresh in this fixture: those need a
-                // separate integration test with explicit device authorization.
+                // Start/Stop and downloads are injected. Device discovery still
+                // belongs to integration tests; do not click Refresh here.
                 controller: EngineController::new(settings.live()),
                 settings,
                 dirty_since: None,
@@ -268,18 +475,10 @@ fn harness_sized(fixture: Fixture, size: egui::Vec2) -> Harness<'static, Fixture
                 .fill(ui.visuals().panel_fill)
                 .inner_margin(20)
                 .show(ui, |ui| {
-                    ui.set_min_size(ui.available_size());
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui_text::set_language(ui.ctx(), fixture.app.settings.language);
-                        fixture.setup_owns_screen =
-                            fixture
-                                .app
-                                .onboarding_ui(ui, &fixture.status, &fixture.devices);
-                        if !fixture.setup_owns_screen {
-                            fixture.app.basic_ui(ui, &fixture.status, &fixture.devices);
-                        }
-                        fixture.app.pth_convert_window(ui.ctx());
-                    });
+                    fixture.app.onboarding.effects.session_revision =
+                        fixture.status.session_revision;
+                    fixture.app.screen_ui(ui, &fixture.status, &fixture.devices);
+                    fixture.setup_owns_screen = fixture.app.onboarding.active();
                 });
         },
         fixture,
@@ -411,12 +610,24 @@ fn ui_device_change_silences_monitor_and_uses_new_device() {
         h.state().app.onboarding.effects.device_requests.last(),
         Some(&vc_app::TestOutput::Monitor)
     );
-    h.state_mut().app.settings.output_device = "Changed output".into();
+    h.get_by_label(text::OUTPUT).click();
+    h.run_steps(4);
+    h.get_by_label("Test headphones").click();
     h.run_steps(4);
     assert_eq!(
         h.state().app.onboarding.effects.device_requests.last(),
         Some(&vc_app::TestOutput::Silent)
     );
+    let config = h
+        .state()
+        .app
+        .onboarding
+        .effects
+        .device_configs
+        .last()
+        .unwrap();
+    assert_eq!(config.output_device.as_deref(), Some("Test headphones"));
+    assert_eq!(config.output, vc_app::TestOutput::Silent);
 }
 
 #[cfg(feature = "ui-snapshots")]
@@ -607,6 +818,15 @@ fn ui_runtime_download_prompt_waits_for_inspection() {
                 assert!(h
                     .query_by_label(language.text(text::RUNTIME_LINK))
                     .is_none());
+                if result == Ok(true) {
+                    assert!(!h.state().app.onboarding.prepare_requested);
+                    h.get_by_label(label).scroll_to_me();
+                    h.run_steps(8);
+                    h.get_by_label(label).click();
+                    h.run_steps(4);
+                }
+                assert!(h.state().app.onboarding.prepare_requested);
+                assert!(h.query_by_label(label).is_none());
             }
         }
     }
@@ -677,7 +897,6 @@ fn ui_setup_button_returns_to_device_test() {
     assert!(h.state().setup_owns_screen);
 }
 
-#[cfg(feature = "windowsml")]
 #[test]
 fn ui_failed_conversion_can_retry_then_cancel_without_changing_model() {
     let mut fixture = Fixture::new(Some(Step::Voice), EngineState::Stopped);

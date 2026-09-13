@@ -706,7 +706,10 @@ impl VcGui {
             return;
         }
         self.controller.set_live_params(self.settings.live());
+        #[cfg(not(test))]
         let revision = self.controller.snapshot().0.session_revision + 1;
+        #[cfg(test)]
+        let revision = self.onboarding.effects.session_revision + 1;
         match self.settings.realtime().and_then(|config| {
             #[cfg(not(test))]
             {
@@ -735,12 +738,49 @@ impl VcGui {
     }
 
     fn stop(&mut self) {
-        if let Err(err) = self.controller.stop() {
+        #[cfg(not(test))]
+        let result = self.controller.stop().map_err(|err| format!("{err:#}"));
+        #[cfg(test)]
+        let result = {
+            self.onboarding.effects.stop_requests += 1;
+            self.onboarding
+                .effects
+                .stop_error
+                .clone()
+                .map_or(Ok(()), Err)
+        };
+        if let Err(err) = result {
             self.ui_error = Some(format!("{err:#}"));
         } else {
             self.applied_chunk_ms = None;
             self.onboarding.normal.requested = None;
             self.onboarding.normal.applied = None;
+        }
+    }
+
+    // Shared by eframe and the headless fixture so scrolling and error placement
+    // cannot drift. Lifecycle I/O (autosave, telemetry polling) stays in App::ui.
+    fn screen_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        status: &vc_app::EngineStatusSnapshot,
+        devices: &vc_app::DeviceList,
+    ) {
+        ui_text::set_language(ui.ctx(), self.settings.language);
+        self.pth_convert_window(ui.ctx());
+        if self.onboarding.active() {
+            if let Some(error) = &self.ui_error {
+                ui.colored_label(
+                    egui::Color32::LIGHT_RED,
+                    ui_text::diagnostic_message(self.settings.language, error),
+                );
+            }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                self.download_status(ui);
+                self.onboarding_ui(ui, status, devices);
+            });
+        } else {
+            self.basic_ui(ui, status, devices);
         }
     }
 }
@@ -770,26 +810,12 @@ impl eframe::App for VcGui {
             .inner_margin(20)
             .show(ui, |ui| {
                 self.maybe_save();
-                self.pth_convert_window(ui.ctx());
                 let (status, latest, devices) = self.controller.snapshot();
                 if self.telemetry_updated_at.elapsed() >= TELEMETRY_REFRESH {
                     self.telemetry = latest;
                     self.telemetry_updated_at = Instant::now();
                 }
-                if self.onboarding.active() {
-                    if let Some(error) = &self.ui_error {
-                        ui.colored_label(
-                            egui::Color32::LIGHT_RED,
-                            ui_text::diagnostic_message(self.settings.language, error),
-                        );
-                    }
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        self.download_status(ui);
-                        self.onboarding_ui(ui, &status, &devices);
-                    });
-                } else {
-                    self.basic_ui(ui, &status, &devices);
-                }
+                self.screen_ui(ui, &status, &devices);
                 ui.ctx().request_repaint_after(Duration::from_millis(33));
             });
     }

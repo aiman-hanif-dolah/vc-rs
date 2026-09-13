@@ -77,6 +77,12 @@ jobs:
       # is ORT-free by design (hand-rolled ONNX writer) and featureless.
       - name: test (vc-gui + vc-vst3 + vc-convert, default features)
         run: cargo test -p vc-gui -p vc-vst3 -p vc-convert
+      # Separate invocations prevent Cargo feature unification from hiding
+      # package-specific provider and widget visibility regressions.
+      - name: test (GUI Windows ML distribution features)
+        run: cargo test -p vc-gui --no-default-features --features windowsml,rnnoise,gtcrn
+      - name: test (GUI TensorRT distribution features)
+        run: cargo test -p vc-gui --no-default-features --features tensorrt,rnnoise,gtcrn
 
   # ---- Supply chain: licenses, advisories, duplicate/banned deps ----
   cargo-deny:

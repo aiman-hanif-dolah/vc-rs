@@ -1,7 +1,7 @@
 # Normal screen
 
 The standalone GUI has one set of transport, model, pitch and audio controls.
-The body alone scrolls; transport stays above it and language/Setup below it.
+The body alone scrolls; transport stays above it and language/Setup scroll with the body.
 Input/output are side by side when space permits and stack in narrower windows.
 
 Model settings sit under voice selection. ContentVec and RMVPE each offer the

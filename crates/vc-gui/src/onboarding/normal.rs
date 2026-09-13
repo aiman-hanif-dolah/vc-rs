@@ -333,8 +333,12 @@ impl VcGui {
         } else {
             self.settings.f0_model.clone()
         };
-        let default = model_setup::cache_dir()
-            .ok()
+        #[cfg(not(test))]
+        let cache_dir = model_setup::cache_dir().ok();
+        // Fixtures must not depend on whether this user's reference cache exists.
+        #[cfg(test)]
+        let cache_dir = Some(self.onboarding.effects.support_cache_dir.clone());
+        let default = cache_dir
             .map(|p| {
                 p.join(model_setup::MODELS[index].file)
                     .to_string_lossy()
@@ -481,7 +485,8 @@ impl VcGui {
                 // Build's base backends plus the device's live Windows ML
                 // catalog EPs (cached in vc-core), so the picker offers what
                 // is actually usable here rather than a fixed per-build list.
-                for provider in normal_providers()
+                for provider in self
+                    .normal_providers()
                     .into_iter()
                     .filter(|p| gui_provider_visible(*p))
                 {
@@ -720,17 +725,22 @@ impl VcGui {
     }
 }
 
-fn normal_providers() -> Vec<Provider> {
-    #[cfg(not(test))]
-    {
-        vc_core::selectable_providers()
-    }
-    #[cfg(test)]
-    {
-        Provider::ALL
-            .iter()
-            .copied()
-            .filter(|p| p.available_in_build() && !p.is_catalog_ep())
-            .collect()
+impl VcGui {
+    fn normal_providers(&self) -> Vec<Provider> {
+        #[cfg(not(test))]
+        {
+            vc_core::selectable_providers()
+        }
+        #[cfg(test)]
+        {
+            Provider::ALL
+                .iter()
+                .copied()
+                .filter(|p| p.available_in_build() && !p.is_catalog_ep())
+                // Inject only the runtime catalog boundary; render and selection use
+                // the same widgets as production, including optional vendor EPs.
+                .chain(self.onboarding.effects.catalog_providers.iter().copied())
+                .collect()
+        }
     }
 }

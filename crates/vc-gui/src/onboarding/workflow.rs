@@ -6,6 +6,11 @@ use vc_app::{DeviceTestConfig, TestOutput};
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct TestEffects {
+    pub catalog_providers: Vec<Provider>,
+    pub session_revision: u64,
+    pub stop_requests: usize,
+    pub stop_error: Option<String>,
+    pub support_cache_dir: PathBuf,
     pub start_requests: usize,
     pub start_error: Option<String>,
     pub download_requests: usize,
@@ -13,6 +18,7 @@ pub(crate) struct TestEffects {
     pub save_error: Option<String>,
     pub saved: Vec<GuiSettings>,
     pub device_requests: Vec<TestOutput>,
+    pub device_configs: Vec<DeviceTestConfig>,
     pub state: DeviceTestSnapshot,
 }
 
@@ -208,7 +214,7 @@ impl VcGui {
         let result = self.controller.start_device_test(config);
         #[cfg(test)]
         let result: Result<(), String> = {
-            let _ = config;
+            self.onboarding.effects.device_configs.push(config);
             self.onboarding.effects.device_requests.push(output);
             Ok(())
         };
