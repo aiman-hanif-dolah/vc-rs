@@ -11,6 +11,30 @@ Version numbers come from `[workspace.package].version` in the root
 release archives. See [`docs/distribution.md`](docs/distribution.md) for the full
 versioning and publishing procedure.
 
+## [0.5.1] - 2026-09-13
+
+### Added
+
+- Guided GUI setup for models, execution providers, and audio device testing.
+- Recently selected audio devices are prioritized in device pickers.
+- GUI interaction tests for both isolated distribution backend variants.
+
+### Changed
+
+- Redesigned the main GUI controls, simplified status display, and moved setup
+  and language controls into scrollable settings.
+- Added clearer error highlighting and colored audio level meters.
+
+### Fixed
+
+- Preserved model export metadata during built-in PTH-to-ONNX conversion.
+- Cleared stale GUI errors after a successful stop.
+
+### Distribution notes
+
+- Windows binaries are not code-signed; Windows may display a security warning
+  when downloading or running them.
+
 ## [0.5.0] - 2026-09-07
 
 ### Added
@@ -185,6 +209,7 @@ Initial release.
 - One-shot distribution packaging scripts for all four Windows x64 variants.
 - Auto-generated bundled third-party license notices during packaging.
 
+[0.5.1]: https://github.com/shirohata/vc-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/shirohata/vc-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/shirohata/vc-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/shirohata/vc-rs/compare/v0.2.1...v0.3.0
