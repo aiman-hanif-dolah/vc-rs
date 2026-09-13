@@ -640,6 +640,55 @@ mod vc_convert_ort {
     const HOP: usize = 400; // tiny fixture upsample rates 10*10*2*2
     const INTER: usize = 8; // tiny fixture inter_channels
 
+    // Opt-in checks use the production session path and deterministic tiny RVC
+    // feeds. CPU fallback remains enabled, so these validate compatibility and
+    // finite output, not proof that every operation ran on the requested EP.
+    #[cfg(all(windows, feature = "windowsml"))]
+    fn check_openvino(provider: crate::Provider) {
+        super::with_temp_model(
+            provider.label(),
+            &vc_convert_tiny(vc_convert::ExportMode::Streaming),
+            |path| {
+                let mut session = crate::model_rvc::sessions::load_session(
+                    path,
+                    provider,
+                    super::ModelRole::Rvc,
+                    None,
+                    super::TensorRtRunMode::PinnedCpu,
+                    crate::model_rvc::tensorrt::TensorRtSessionPurpose::Main,
+                    false,
+                )
+                .expect("requested OpenVINO device loads tiny RVC model");
+                for _ in 0..3 {
+                    let (audio, phase) = run(&mut session, 8, 0.0);
+                    assert!(!audio.is_empty());
+                    assert!(audio.iter().chain(&phase).all(|value| value.is_finite()));
+                }
+            },
+        );
+    }
+
+    #[cfg(all(windows, feature = "windowsml"))]
+    #[test]
+    #[ignore = "requires Windows ML OpenVINO CPU device"]
+    fn openvino_cpu_tiny_rvc() {
+        check_openvino(crate::Provider::WindowsMlOpenVinoCpu);
+    }
+
+    #[cfg(all(windows, feature = "windowsml"))]
+    #[test]
+    #[ignore = "requires Windows ML OpenVINO GPU device"]
+    fn openvino_gpu_tiny_rvc() {
+        check_openvino(crate::Provider::WindowsMlOpenVinoGpu);
+    }
+
+    #[cfg(all(windows, feature = "windowsml"))]
+    #[test]
+    #[ignore = "requires Windows ML OpenVINO NPU device"]
+    fn openvino_npu_tiny_rvc() {
+        check_openvino(crate::Provider::WindowsMlOpenVinoNpu);
+    }
+
     fn session() -> Session {
         // Under the windowsml feature ORT is load-dynamic; bind it to the
         // Windows App SDK runtime exactly like the real session path does.

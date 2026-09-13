@@ -804,6 +804,15 @@ mod tests {
 
     #[test]
     fn parses_windowsml_providers() {
+        for suffix in ["cpu", "gpu", "npu"] {
+            let name = format!("windowsml-openvino-{suffix}");
+            let cli = Cli::try_parse_from(["vc-rs", "run", "--passthrough", "--provider", &name])
+                .unwrap();
+            let Command::Run(args) = cli.command else {
+                panic!("expected run")
+            };
+            assert_eq!(args.provider.label(), name);
+        }
         let cli = Cli::try_parse_from(["vc-rs", "run", "--passthrough", "--provider", "windowsml"])
             .unwrap();
         let Command::Run(args) = cli.command else {

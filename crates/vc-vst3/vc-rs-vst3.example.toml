@@ -31,6 +31,8 @@ f0_model = "/path/to/models/rmvpe/rmvpe.onnx"
 # "cpu" | "windowsml" | "windowsml-directml" | "windowsml-cpu" | "cuda" | "tensorrt"
 # Explicit Windows ML catalog EPs are also valid: "windowsml-nvtrtx",
 # "windowsml-qnn", "windowsml-openvino", "windowsml-migraphx", "windowsml-vitisai".
+# OpenVINO hardware: "windowsml-openvino-cpu", "windowsml-openvino-gpu",
+# "windowsml-openvino-npu". Missing hardware errors; ORT CPU op fallback remains.
 provider = "windowsml"
 # "high" | "normal". Applied only by the native TensorRT backend.
 gpu_priority = "high"

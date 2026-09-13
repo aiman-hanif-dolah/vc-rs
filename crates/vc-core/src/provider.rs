@@ -20,6 +20,9 @@ pub enum Provider {
     WindowsMlDirectMl,
     WindowsMlNvTensorRtRtx,
     WindowsMlOpenVino,
+    WindowsMlOpenVinoCpu,
+    WindowsMlOpenVinoGpu,
+    WindowsMlOpenVinoNpu,
     WindowsMlQnn,
     WindowsMlMiGraphX,
     WindowsMlVitisAi,
@@ -44,6 +47,9 @@ impl Provider {
         Provider::WindowsMlDirectMl,
         Provider::WindowsMlNvTensorRtRtx,
         Provider::WindowsMlOpenVino,
+        Provider::WindowsMlOpenVinoCpu,
+        Provider::WindowsMlOpenVinoGpu,
+        Provider::WindowsMlOpenVinoNpu,
         Provider::WindowsMlQnn,
         Provider::WindowsMlMiGraphX,
         Provider::WindowsMlVitisAi,
@@ -96,6 +102,18 @@ impl Provider {
                 name: "windowsml-openvino",
                 aliases: &["windows-ml-openvino", "winml-openvino"],
             },
+            Provider::WindowsMlOpenVinoCpu => ProviderInfo {
+                name: "windowsml-openvino-cpu",
+                aliases: &["windows-ml-openvino-cpu", "winml-openvino-cpu"],
+            },
+            Provider::WindowsMlOpenVinoGpu => ProviderInfo {
+                name: "windowsml-openvino-gpu",
+                aliases: &["windows-ml-openvino-gpu", "winml-openvino-gpu"],
+            },
+            Provider::WindowsMlOpenVinoNpu => ProviderInfo {
+                name: "windowsml-openvino-npu",
+                aliases: &["windows-ml-openvino-npu", "winml-openvino-npu"],
+            },
             Provider::WindowsMlQnn => ProviderInfo {
                 name: "windowsml-qnn",
                 aliases: &["windows-ml-qnn", "winml-qnn"],
@@ -147,6 +165,9 @@ impl Provider {
                 | Provider::WindowsMlDirectMl
                 | Provider::WindowsMlNvTensorRtRtx
                 | Provider::WindowsMlOpenVino
+                | Provider::WindowsMlOpenVinoCpu
+                | Provider::WindowsMlOpenVinoGpu
+                | Provider::WindowsMlOpenVinoNpu
                 | Provider::WindowsMlQnn
                 | Provider::WindowsMlMiGraphX
                 | Provider::WindowsMlVitisAi
@@ -167,6 +188,9 @@ impl Provider {
             self,
             Provider::WindowsMlNvTensorRtRtx
                 | Provider::WindowsMlOpenVino
+                | Provider::WindowsMlOpenVinoCpu
+                | Provider::WindowsMlOpenVinoGpu
+                | Provider::WindowsMlOpenVinoNpu
                 | Provider::WindowsMlQnn
                 | Provider::WindowsMlMiGraphX
                 | Provider::WindowsMlVitisAi
@@ -186,6 +210,19 @@ impl Provider {
     /// without silently changing the fixed-shape path.
     pub fn shows_gpu_device_selector(self) -> bool {
         self.is_cuda() || self.is_tensorrt()
+    }
+
+    /// Explicit OpenVINO hardware restriction. The legacy provider intentionally
+    /// leaves the runtime's device list unchanged; it is not an alias for CPU.
+    #[cfg(all(feature = "ort", any(test, all(windows, feature = "windowsml"))))]
+    pub(crate) fn openvino_device_type(self) -> Option<ort::memory::DeviceType> {
+        use ort::memory::DeviceType;
+        match self {
+            Self::WindowsMlOpenVinoCpu => Some(DeviceType::CPU),
+            Self::WindowsMlOpenVinoGpu => Some(DeviceType::GPU),
+            Self::WindowsMlOpenVinoNpu => Some(DeviceType::NPU),
+            _ => None,
+        }
     }
 
     /// True when this provider's backend is compiled into the current build.
@@ -293,6 +330,33 @@ impl clap::ValueEnum for Provider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "ort")]
+    #[test]
+    fn openvino_hardware_selection_is_explicit_and_round_trips() {
+        use ort::memory::DeviceType;
+        for (suffix, expected) in [
+            ("cpu", DeviceType::CPU),
+            ("gpu", DeviceType::GPU),
+            ("npu", DeviceType::NPU),
+        ] {
+            let name = format!("windowsml-openvino-{suffix}");
+            let provider: Provider = name.parse().unwrap();
+            assert_eq!(provider.label(), name);
+            assert_eq!(provider.openvino_device_type(), Some(expected));
+            assert!(provider.is_catalog_ep());
+            assert!(provider.is_windows_ml());
+            assert!(!provider.shows_gpu_device_selector());
+            #[cfg(all(windows, feature = "windowsml"))]
+            assert_eq!(
+                provider.catalog_ep(),
+                Some(crate::windows_ml::CatalogExecutionProvider::OpenVino)
+            );
+        }
+        assert_eq!(Provider::WindowsMlOpenVino.openvino_device_type(), None);
+        assert_eq!(Provider::WindowsMlCpu.openvino_device_type(), None);
+        assert!("windowsml-openvino-auto".parse::<Provider>().is_err());
+    }
 
     #[test]
     fn all_lists_every_variant_once() {

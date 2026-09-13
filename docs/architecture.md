@@ -39,6 +39,34 @@ together.
 
 ## Shared Conversion Paths
 
+Windows ML OpenVINO hardware selection is part of the shared `Provider` value:
+`windowsml-openvino-cpu`, `windowsml-openvino-gpu`, and `windowsml-openvino-npu`
+restrict the catalog EP device list by hardware type before session creation.
+CLI `run`/`wav` accept these through `--provider`; GUI and VST3 expose them in
+their provider pickers and persist the same names. Reload the models to apply a
+change. All model roles use this same session path. An unavailable type fails
+instead of retrying a different type. Multiple matching devices are passed to
+the EP without selecting an arbitrary first device; per-adapter selection is
+not exposed yet. The legacy `windowsml-openvino` preserves its unrestricted
+device list, and Windows ML Auto retains its existing catalog/DirectML/CPU
+retry policy. ORT CPU fallback for unsupported operations remains enabled.
+Load-time logs report the requested type and selected EP hardware IDs, not
+proof of per-operation placement. These IDs are not CUDA device indices.
+
+The Windows ML plugin API (`SessionOptionsAppendExecutionProvider_V2`, wrapped
+by `with_devices`) derives OpenVINO device settings from the selected handles;
+do not substitute the standalone OpenVINO EP's `device_type` option here.
+Device discovery/filtering and diagnostics run during model loading on the
+worker, never in an audio callback. No inference precision override is added.
+
+Opt-in `openvino_cpu_tiny_rvc`, `openvino_gpu_tiny_rvc`, and
+`openvino_npu_tiny_rvc` tests exercise the shared loader and repeated inference
+with a tiny RVC fixture (`cargo test -p vc-core --no-default-features --features
+windowsml openvino_cpu_tiny_rvc -- --ignored --nocapture`, with the development
+environment activated). These require the corresponding catalog EP/device and
+check finite output; they do not replace real-model audio/latency or operation
+placement validation. Follow `development_ja.md` for bootstrap troubleshooting.
+
 All conversion modes should use the shared `vc-core` model and chunk-conversion
 components. Inference, model streaming state, output shaping, and SOLA/PSOLA
 joining must not be reimplemented in a front-end merely because its audio source

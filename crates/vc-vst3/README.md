@@ -115,6 +115,15 @@ providers are also accepted: `windowsml-nvtrtx`, `windowsml-qnn`,
 explicit providers do not fallback; they fail if the requested catalog EP is not
 present or ready.
 
+Use `windowsml-openvino-cpu`, `windowsml-openvino-gpu`, or
+`windowsml-openvino-npu` in the provider picker or the TOML `provider` field to
+restrict OpenVINO to that hardware type. The choice persists with the plugin
+state and applies to every model session on Load/Reload. Missing hardware is an
+error. Multiple devices of the selected type are passed to the EP; individual
+GPU selection is not yet exposed. The existing `windowsml-openvino` retains its
+unrestricted device list. ORT CPU fallback for unsupported operations remains
+enabled, so selecting GPU/NPU does not guarantee that every operation runs there.
+
 End users must have **Windows App SDK Runtime 2.x (minimum 2.1)** installed.
 After bundling, copy the bootstrapper DLL into the bundle:
 

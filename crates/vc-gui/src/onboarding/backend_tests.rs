@@ -64,11 +64,17 @@ fn ui_catalog_providers_can_be_selected_without_exposing_cuda_device_controls() 
         fixture.app.onboarding.effects.catalog_providers = vec![
             Provider::WindowsMlNvTensorRtRtx,
             Provider::WindowsMlOpenVino,
+            Provider::WindowsMlOpenVinoCpu,
+            Provider::WindowsMlOpenVinoGpu,
+            Provider::WindowsMlOpenVinoNpu,
         ];
         let mut h = backend_harness(fixture);
         for label in [
             "windowsml-nvtrtx",
             "windowsml-openvino",
+            "windowsml-openvino-cpu",
+            "windowsml-openvino-gpu",
+            "windowsml-openvino-npu",
             "windowsml",
             "windowsml-directml",
         ] {
@@ -78,6 +84,10 @@ fn ui_catalog_providers_can_be_selected_without_exposing_cuda_device_controls() 
             h.get_by_label(label).click();
             h.run_steps(4);
             assert_eq!(h.state().app.settings.provider, label);
+            let saved = toml::to_string(&h.state().app.settings).unwrap();
+            let mut restored: GuiSettings = toml::from_str(&saved).unwrap();
+            restored.normalize_gui_managed_settings();
+            assert_eq!(restored.provider, label);
             assert!(h.query_by_label(lang.text("GPU Device")).is_none());
             assert!(h
                 .query_by_label(lang.text("Detecting CUDA devices..."))

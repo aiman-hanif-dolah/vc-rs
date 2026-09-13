@@ -159,7 +159,10 @@ impl crate::Provider {
                 Some(CatalogExecutionProvider::NvTensorRtRtx)
             }
             crate::Provider::WindowsMlQnn => Some(CatalogExecutionProvider::Qnn),
-            crate::Provider::WindowsMlOpenVino => Some(CatalogExecutionProvider::OpenVino),
+            crate::Provider::WindowsMlOpenVino
+            | crate::Provider::WindowsMlOpenVinoCpu
+            | crate::Provider::WindowsMlOpenVinoGpu
+            | crate::Provider::WindowsMlOpenVinoNpu => Some(CatalogExecutionProvider::OpenVino),
             crate::Provider::WindowsMlMiGraphX => Some(CatalogExecutionProvider::MiGraphX),
             crate::Provider::WindowsMlVitisAi => Some(CatalogExecutionProvider::VitisAi),
             _ => None,
@@ -266,6 +269,13 @@ pub fn available_catalog_providers() -> &'static [crate::Provider] {
             .fold(Vec::new(), |mut acc, provider| {
                 if !acc.contains(&provider) {
                     acc.push(provider);
+                    if provider == crate::Provider::WindowsMlOpenVino {
+                        acc.extend([
+                            crate::Provider::WindowsMlOpenVinoCpu,
+                            crate::Provider::WindowsMlOpenVinoGpu,
+                            crate::Provider::WindowsMlOpenVinoNpu,
+                        ]);
+                    }
                 }
                 acc
             })

@@ -1789,6 +1789,7 @@ impl RvcModelSession {
 #[cfg(all(windows, feature = "windowsml"))]
 fn with_windows_ml_catalog_ep(
     builder: ort::session::builder::SessionBuilder,
+    provider: Provider,
     catalog_ep: crate::windows_ml::CatalogExecutionProvider,
     path: &Path,
     tensor_rt_profile: Option<&TensorRtSessionProfile>,
@@ -1797,7 +1798,7 @@ fn with_windows_ml_catalog_ep(
     disable_runtime_cache: bool,
 ) -> Result<ort::session::builder::SessionBuilder> {
     let env = ort::environment::Environment::current()?;
-    let devices = env
+    let mut devices = env
         .devices()
         .filter(|device| {
             device
@@ -1813,6 +1814,33 @@ fn with_windows_ml_catalog_ep(
             catalog_ep.label(),
             path.display()
         );
+    }
+    if let Some(requested) = provider.openvino_device_type() {
+        // AppendExecutionProvider_V2 derives OpenVINO's device configuration
+        // from these hardware handles; its device_type option is not supported.
+        // Restrict every model session here, before compilation, never on the
+        // audio callback. Missing hardware must not silently select another kind.
+        let available = devices
+            .iter()
+            .map(|device| {
+                let hardware = device.hardware_device();
+                format!("{:?}:{}", hardware.ty(), hardware.id())
+            })
+            .collect::<Vec<_>>();
+        devices.retain(|device| device.hardware_device().ty() == requested);
+        if devices.is_empty() {
+            bail!(
+                "{} requested OpenVINO {requested:?}, but no matching device is available for {}; available OpenVINO devices: {}",
+                provider.label(), path.display(), available.join(", ")
+            );
+        }
+        for device in &devices {
+            let hardware = device.hardware_device();
+            info!(
+                "selected OpenVINO EP device requested={requested:?} type={:?} hardware_id={} vendor={} model={} (ORT CPU fallback remains enabled)",
+                hardware.ty(), hardware.id(), hardware.vendor().unwrap_or("unknown"), path.display()
+            );
+        }
     }
     let ep_name = devices[0].ep()?.to_string();
     let mut options = Vec::<(String, String)>::new();
@@ -2051,6 +2079,9 @@ fn load_session_once(
         }
         Provider::WindowsMlNvTensorRtRtx
         | Provider::WindowsMlOpenVino
+        | Provider::WindowsMlOpenVinoCpu
+        | Provider::WindowsMlOpenVinoGpu
+        | Provider::WindowsMlOpenVinoNpu
         | Provider::WindowsMlQnn
         | Provider::WindowsMlMiGraphX
         | Provider::WindowsMlVitisAi => {
@@ -2081,6 +2112,7 @@ fn load_session_once(
                 }
                 builder = with_windows_ml_catalog_ep(
                     builder,
+                    provider,
                     catalog_ep,
                     path,
                     tensor_rt_profile,
