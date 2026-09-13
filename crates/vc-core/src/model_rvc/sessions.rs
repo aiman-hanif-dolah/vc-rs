@@ -422,7 +422,7 @@ impl RmvpePitchSession {
         Ok(Self {
             #[cfg(feature = "ort")]
             session,
-            provider,
+            provider: provider_for_model_role(provider, ModelRole::Rmvpe),
             tensor_rt_profile,
             tensor_rt_run_mode,
             #[cfg(feature = "ort")]
@@ -1844,6 +1844,22 @@ fn with_windows_ml_catalog_ep(
     }
     let ep_name = devices[0].ep()?.to_string();
     let mut options = Vec::<(String, String)>::new();
+    if catalog_ep == crate::windows_ml::CatalogExecutionProvider::OpenVino {
+        // Apply to every role, including Auto. ACCURACY alone still produced
+        // rounded NSF phase on the catalog GPU EP; explicitly request f32.
+        // Phase error carries across chunks (time_state); the GPU tiny-RVC test
+        // compares against ORT CPU to catch it. Keep device selection in with_devices.
+        options.push((format!("{ep_name}.precision"), "ACCURACY".to_owned()));
+        options.push((
+            format!("{ep_name}.load_config"),
+            r#"{"GPU":{"INFERENCE_PRECISION_HINT":"f32","EXECUTION_MODE_HINT":"ACCURACY"}}"#
+                .to_owned(),
+        ));
+        info!(
+            "using OpenVINO precision=ACCURACY GPU inference_precision=f32 for {}",
+            path.display()
+        );
+    }
     if catalog_ep == crate::windows_ml::CatalogExecutionProvider::NvTensorRtRtx {
         let profile = tensor_rt_profile.ok_or_else(|| {
             anyhow!(
@@ -1989,6 +2005,24 @@ fn load_windows_ml_auto<T>(
     )
 }
 
+// The catalog OpenVINO GPU returned constant 10 Hz from RMVPE even with
+// explicit f32, while ORT CPU tracked the input pitch. Keep just this stage on
+// CPU until that incompatibility is resolved. The unrestricted OpenVINO choice
+// can include GPU, including when selected by Windows ML Auto. Hardware-specific
+// CPU/NPU choices are unchanged. See openvino_support_model_diagnostic.
+fn provider_for_model_role(provider: Provider, role: ModelRole) -> Provider {
+    if matches!(role, ModelRole::Rmvpe)
+        && matches!(
+            provider,
+            Provider::WindowsMlOpenVino | Provider::WindowsMlOpenVinoGpu
+        )
+    {
+        Provider::WindowsMlCpu
+    } else {
+        provider
+    }
+}
+
 #[cfg(feature = "ort")]
 fn load_session_once(
     path: &Path,
@@ -1999,6 +2033,16 @@ fn load_session_once(
     tensor_rt_session_purpose: TensorRtSessionPurpose,
     disable_nvtrtx_runtime_cache: bool,
 ) -> Result<Session> {
+    let effective_provider = provider_for_model_role(provider, role);
+    if effective_provider != provider {
+        tracing::warn!(
+            "using {} for RMVPE requested via {} to avoid OpenVINO GPU incorrect pitch output: {}",
+            effective_provider.label(),
+            provider.label(),
+            path.display()
+        );
+    }
+    let provider = effective_provider;
     // CUDA consumes the selected device ID from the fixed-shape profile.
     // Windows ML consumes the same profile only for TensorRT-RTX shape options;
     // its adapter selection remains owned by Windows ML.

@@ -50,6 +50,17 @@ the EP without selecting an arbitrary first device; per-adapter selection is
 not exposed yet. The legacy `windowsml-openvino` preserves its unrestricted
 device list, and Windows ML Auto retains its existing catalog/DirectML/CPU
 retry policy. ORT CPU fallback for unsupported operations remains enabled.
+There is one model-role workaround: RMVPE uses ORT CPU for
+`windowsml-openvino-gpu` and unrestricted `windowsml-openvino` (also when Auto
+selects that catalog EP). The GPU returned constant 10 Hz for voiced test inputs
+even with explicit f32, causing incorrect excitation pitch. ContentVec and RVC
+retain the selected OpenVINO devices. Explicit OpenVINO CPU/NPU are unchanged.
+This decision and its warning run only at session creation; there is no
+per-chunk retry or second conversion pipeline.
+Local RMVPE diagnostics still returned 10 Hz with ORT graph optimizations
+disabled or basic-only, memory patterns disabled, and OpenVINO
+`disable_dynamic_shapes=True` (all with explicit GPU f32). These option changes
+did not qualify as a replacement for the CPU workaround.
 Load-time logs report the requested type and selected EP hardware IDs, not
 proof of per-operation placement. These IDs are not CUDA device indices.
 
@@ -57,15 +68,27 @@ The Windows ML plugin API (`SessionOptionsAppendExecutionProvider_V2`, wrapped
 by `with_devices`) derives OpenVINO device settings from the selected handles;
 do not substitute the standalone OpenVINO EP's `device_type` option here.
 Device discovery/filtering and diagnostics run during model loading on the
-worker, never in an audio callback. No inference precision override is added.
+worker, never in an audio callback. All OpenVINO model sessions request
+`precision=ACCURACY`, including when Windows ML Auto selects OpenVINO, to
+prioritize numerical accuracy over reduced-precision performance defaults.
+The GPU `load_config` also sets `INFERENCE_PRECISION_HINT=f32` and
+`EXECUTION_MODE_HINT=ACCURACY`: the catalog GPU EP still rounded streaming NSF
+phase with `precision=ACCURACY` alone. Explicit f32 eliminated the tiny-model
+phase error against ORT CPU; the GPU test checks phase and audio agreement.
+Reload models after rebuilding to apply this setting; real-model audio and
+latency still need validation on the selected hardware.
 
 Opt-in `openvino_cpu_tiny_rvc`, `openvino_gpu_tiny_rvc`, and
 `openvino_npu_tiny_rvc` tests exercise the shared loader and repeated inference
 with a tiny RVC fixture (`cargo test -p vc-core --no-default-features --features
 windowsml openvino_cpu_tiny_rvc -- --ignored --nocapture`, with the development
 environment activated). These require the corresponding catalog EP/device and
-check finite output; they do not replace real-model audio/latency or operation
+check finite output (and CPU numerical agreement for GPU); they do not replace real-model audio/latency or operation
 placement validation. Follow `development_ja.md` for bootstrap troubleshooting.
+The opt-in `openvino_support_model_diagnostic` also compares ContentVec and
+RMVPE against CPU with silence and fixed harmonic inputs. Set
+`VC_RS_DIAG_EMBEDDER` and `VC_RS_DIAG_F0` to local support model paths. This
+regression guards the RMVPE workaround without shipping those large models.
 
 All conversion modes should use the shared `vc-core` model and chunk-conversion
 components. Inference, model streaming state, output shaping, and SOLA/PSOLA

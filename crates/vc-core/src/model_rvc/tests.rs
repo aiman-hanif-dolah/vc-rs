@@ -5,6 +5,84 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::Provider;
 
+#[cfg(all(windows, feature = "windowsml"))]
+#[test]
+#[ignore = "requires VC_RS_DIAG_EMBEDDER, VC_RS_DIAG_F0 and OpenVINO GPU"]
+fn openvino_support_model_diagnostic() {
+    use super::feature::FeatureTensor;
+    use super::sessions::{HubertEmbedderSession, RmvpePitchSession};
+    use super::tensorrt::TensorRtSessionPurpose;
+    let embedder_path = PathBuf::from(std::env::var_os("VC_RS_DIAG_EMBEDDER").unwrap());
+    let f0_path = PathBuf::from(std::env::var_os("VC_RS_DIAG_F0").unwrap());
+    let mut reference = Vec::new();
+    for provider in [Provider::WindowsMlCpu, Provider::WindowsMlOpenVinoGpu] {
+        let mut embedder = HubertEmbedderSession::load(
+            &embedder_path,
+            provider,
+            768,
+            None,
+            None,
+            TensorRtRunMode::PinnedCpu,
+            TensorRtSessionPurpose::Main,
+        )
+        .unwrap();
+        let mut pitch = RmvpePitchSession::load(
+            &f0_path,
+            provider,
+            None,
+            TensorRtRunMode::PinnedCpu,
+            TensorRtSessionPurpose::Main,
+        )
+        .unwrap();
+        // Identical harmonic inputs isolate the support models from joining,
+        // microphone I/O and RVC source-noise/phase state.
+        for (index, frequency) in [0.0f32, 160.0, 220.0].into_iter().enumerate() {
+            let signal: Vec<f32> = (0..11520)
+                .map(|i| {
+                    let phase = std::f32::consts::TAU * frequency * i as f32 / 16000.0;
+                    0.15 * (phase.sin() + 0.4 * (2.0 * phase).sin() + 0.2 * (3.0 * phase).sin())
+                })
+                .collect();
+            let mut features = FeatureTensor::default();
+            embedder.extract_into(&signal, &mut features).unwrap();
+            let f0 = pitch.extract(&signal[1440..], 0.0, 0.3).unwrap().to_vec();
+            assert!(features.data.iter().chain(&f0).all(|v| v.is_finite()));
+            if provider == Provider::WindowsMlCpu {
+                reference.push((features, f0));
+            } else {
+                let (ref_features, ref_f0) = &reference[index];
+                assert_eq!(features.shape, ref_features.shape);
+                assert_eq!(f0.len(), ref_f0.len());
+                let energy: f64 = ref_features
+                    .data
+                    .iter()
+                    .map(|&v| f64::from(v).powi(2))
+                    .sum();
+                let error: f64 = features
+                    .data
+                    .iter()
+                    .zip(&ref_features.data)
+                    .map(|(&a, &b)| (f64::from(a) - f64::from(b)).powi(2))
+                    .sum();
+                let pitch_diff = f0
+                    .iter()
+                    .zip(ref_f0)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max);
+                eprintln!(
+                    "input_hz={frequency} feature_relative_rms={} pitch_max_diff={pitch_diff}",
+                    (error / energy.max(1e-30)).sqrt()
+                );
+                assert!((error / energy.max(1e-30)).sqrt() < 1e-3);
+                assert!(
+                    pitch_diff < 1e-3,
+                    "incorrect RMVPE pitch for {frequency} Hz: {pitch_diff}"
+                );
+            }
+        }
+    }
+}
+
 use super::onnx_meta::RvcIoNames;
 use super::pitch::{
     align_pitchf_to_features, center_crop_pitchf_to_features, pitchf_tail_for_output,
@@ -659,10 +737,29 @@ mod vc_convert_ort {
                     false,
                 )
                 .expect("requested OpenVINO device loads tiny RVC model");
+                // Finite output alone missed GPU reduced-precision phase drift.
+                // Fixed noise/pitch isolates backend arithmetic from RVC randomness.
+                let reference = (provider == crate::Provider::WindowsMlOpenVinoGpu).then(|| {
+                    let mut reference = self::session();
+                    run(&mut reference, 8, 0.0)
+                });
                 for _ in 0..3 {
                     let (audio, phase) = run(&mut session, 8, 0.0);
                     assert!(!audio.is_empty());
                     assert!(audio.iter().chain(&phase).all(|value| value.is_finite()));
+                    if let Some((reference_audio, reference_phase)) = &reference {
+                        assert!(max_abs_diff(&audio, reference_audio) < 1e-6);
+                        assert_eq!(phase.len(), reference_phase.len());
+                        for (actual, expected) in phase.iter().zip(reference_phase) {
+                            // Phase is periodic: 0 and 1 represent the same phase.
+                            let delta = (actual - expected).abs();
+                            let circular_delta = delta.min((1.0 - delta).abs());
+                            assert!(
+                                circular_delta < 1e-5,
+                                "GPU phase drift: {actual} vs {expected}"
+                            );
+                        }
+                    }
                 }
             },
         );
