@@ -282,6 +282,14 @@ fn ui_stop_failure_keeps_applied_settings_and_shows_error() {
     assert_eq!(h.state().app.onboarding.effects.stop_requests, 1);
     assert!(h.state().app.onboarding.normal.applied.is_some());
     h.get_by_label("Test stop failure");
+
+    h.state_mut().app.onboarding.effects.stop_error = None;
+    h.get_by_label(text::STOP).click();
+    h.run_steps(4);
+    assert_eq!(h.state().app.onboarding.effects.stop_requests, 2);
+    assert!(h.state().app.onboarding.normal.applied.is_none());
+    assert!(h.state().app.ui_error.is_none());
+    assert!(h.query_by_label("Test stop failure").is_none());
 }
 
 #[test]

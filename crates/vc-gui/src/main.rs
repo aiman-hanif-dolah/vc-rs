@@ -752,6 +752,7 @@ impl VcGui {
         if let Err(err) = result {
             self.ui_error = Some(format!("{err:#}"));
         } else {
+            self.ui_error = None;
             self.applied_chunk_ms = None;
             self.onboarding.normal.requested = None;
             self.onboarding.normal.applied = None;
