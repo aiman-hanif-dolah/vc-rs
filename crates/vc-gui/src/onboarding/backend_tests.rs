@@ -68,10 +68,11 @@ fn ui_catalog_providers_can_be_selected_without_exposing_cuda_device_controls() 
             Provider::WindowsMlOpenVinoGpu,
             Provider::WindowsMlOpenVinoNpu,
         ];
+        fixture.app.openvino_devices.status =
+            vc_core::openvino::DeviceStatus::Detected(Provider::OPENVINO_DEVICES.to_vec());
         let mut h = backend_harness(fixture);
         for label in [
             "windowsml-nvtrtx",
-            "windowsml-openvino",
             "windowsml-openvino-cpu",
             "windowsml-openvino-gpu",
             "windowsml-openvino-npu",
@@ -94,7 +95,9 @@ fn ui_catalog_providers_can_be_selected_without_exposing_cuda_device_controls() 
             if let Some(device) = provider.openvino_device_label() {
                 h.get_by_label(lang.text("OpenVINO Device")).click();
                 h.run_steps(4);
-                h.get_by_label(lang.text(device)).click();
+                assert!(h.query_by_label(lang.text("Default")).is_none());
+                h.get_by_label(&format!("{} ({})", device, lang.text("Available")))
+                    .click();
                 h.run_steps(4);
             } else {
                 assert!(h.query_by_label(lang.text("OpenVINO Device")).is_none());
@@ -117,13 +120,20 @@ fn ui_catalog_providers_can_be_selected_without_exposing_cuda_device_controls() 
 #[test]
 fn ui_restores_openvino_hardware_without_changing_saved_provider() {
     for lang in [text::Language::English, text::Language::Japanese] {
-        for &provider in Provider::OPENVINO_DEVICES {
+        for provider in std::iter::once(Provider::WindowsMlOpenVino)
+            .chain(Provider::OPENVINO_DEVICES.iter().copied())
+        {
             let mut fixture = ready_main_fixture(lang);
             fixture.app.settings.provider = provider.label().into();
-            fixture.app.onboarding.effects.catalog_providers = Provider::OPENVINO_DEVICES.to_vec();
+            fixture.app.onboarding.effects.catalog_providers = vec![Provider::WindowsMlOpenVino];
+            fixture.app.openvino_devices.status =
+                vc_core::openvino::DeviceStatus::Detected(Provider::OPENVINO_DEVICES.to_vec());
             let mut h = backend_harness(fixture);
             h.get_by_label(lang.text("OpenVINO Device"));
             assert_eq!(h.state().app.settings.provider, provider.label());
+            if provider == Provider::WindowsMlOpenVino {
+                h.get_by_value(lang.text("Unspecified (legacy setting)"));
+            }
             // Re-selecting the same backend must not reset its device choice.
             h.get_by_label(lang.text("Provider")).click();
             h.run_steps(4);
@@ -132,6 +142,117 @@ fn ui_restores_openvino_hardware_without_changing_saved_provider() {
             assert_eq!(h.state().app.settings.provider, provider.label());
         }
     }
+}
+
+#[cfg(feature = "windowsml")]
+#[test]
+fn ui_openvino_disables_only_confirmed_missing_devices() {
+    for lang in [text::Language::English, text::Language::Japanese] {
+        for detected in [false, true] {
+            let mut fixture = ready_main_fixture(lang);
+            fixture.app.settings.provider = "windowsml-openvino-npu".into();
+            fixture.app.onboarding.effects.catalog_providers = vec![Provider::WindowsMlOpenVino];
+            fixture.app.openvino_devices.status = if detected {
+                vc_core::openvino::DeviceStatus::Detected(vec![Provider::WindowsMlOpenVinoCpu])
+            } else {
+                vc_core::openvino::DeviceStatus::Unknown("Test EP not prepared".into())
+            };
+            let mut h = backend_harness(fixture);
+            // Discovery must not silently replace a saved, now-missing device.
+            assert_eq!(h.state().app.settings.provider, "windowsml-openvino-npu");
+            h.get_by_label(lang.text("OpenVINO Device")).click();
+            h.run_steps(4);
+            assert!(h.query_by_label(lang.text("Default")).is_none());
+            let npu = format!(
+                "NPU ({})",
+                lang.text(if detected {
+                    "Unavailable"
+                } else {
+                    "Unverified"
+                })
+            );
+            assert_eq!(
+                h.get_by_label(&npu).accesskit_node().is_disabled(),
+                detected
+            );
+            let cpu = format!(
+                "CPU ({})",
+                lang.text(if detected { "Available" } else { "Unverified" })
+            );
+            assert!(!h.get_by_label(&cpu).accesskit_node().is_disabled());
+            h.get_by_label(&cpu).click();
+            h.run_steps(4);
+            assert_eq!(h.state().app.settings.provider, "windowsml-openvino-cpu");
+        }
+    }
+}
+
+#[cfg(feature = "windowsml")]
+#[test]
+fn ui_openvino_first_download_then_devices_without_refresh_button() {
+    use vc_core::openvino::DeviceStatus;
+    for lang in [text::Language::English, text::Language::Japanese] {
+        let mut fixture = ready_main_fixture(lang);
+        fixture.app.settings.provider = "windowsml-openvino-gpu".into();
+        fixture.app.onboarding.effects.catalog_providers = vec![Provider::WindowsMlOpenVino];
+        fixture.app.openvino_devices.status = DeviceStatus::DownloadRequired;
+        let mut h = backend_harness(fixture);
+        h.get_by_label(lang.text("Download OpenVINO to check available devices."));
+        assert!(h.query_by_label(lang.text("OpenVINO Device")).is_none());
+        assert!(matches!(
+            h.state().app.openvino_devices.status,
+            DeviceStatus::DownloadRequired
+        ));
+        h.get_by_label(lang.text("Download and check")).click();
+        h.run_steps(4);
+        h.get_by_label(lang.text("Downloading and preparing OpenVINO..."));
+        assert!(h.query_by_label(lang.text("Download and check")).is_none());
+        assert!(h.query_by_label(lang.text("OpenVINO Device")).is_none());
+
+        // Inject only the asynchronous result. The click and queued retry use
+        // production state transitions, without acquiring an EP in a UI test.
+        h.state_mut().app.openvino_devices.status =
+            DeviceStatus::Unknown("Test download failed".into());
+        h.run_steps(4);
+        h.get_by_label(lang.text("Retry device check")).click();
+        h.run_steps(4);
+        assert!(matches!(
+            h.state().app.openvino_devices.status,
+            DeviceStatus::Downloading
+        ));
+        h.state_mut().app.openvino_devices.status = DeviceStatus::Detected(vec![
+            Provider::WindowsMlOpenVinoCpu,
+            Provider::WindowsMlOpenVinoGpu,
+        ]);
+        h.run_steps(4);
+        h.get_by_label(lang.text("OpenVINO Device"));
+        assert!(h.query_by_label(lang.text("Retry device check")).is_none());
+        assert!(h.query_by_label(lang.text("Download and check")).is_none());
+        for removed in ["Refresh OpenVINO devices", "OpenVINOデバイスを再確認"] {
+            assert!(h.query_by_label(removed).is_none());
+        }
+        assert_eq!(h.state().app.settings.provider, "windowsml-openvino-gpu");
+    }
+}
+
+#[cfg(feature = "windowsml")]
+#[test]
+fn ui_new_openvino_selection_is_explicit_cpu() {
+    let mut fixture = ready_main_fixture(text::Language::English);
+    fixture.app.settings.provider = "windowsml".into();
+    fixture.app.onboarding.effects.catalog_providers = vec![Provider::WindowsMlOpenVino];
+    fixture.app.openvino_devices.status =
+        vc_core::openvino::DeviceStatus::Detected(Provider::OPENVINO_DEVICES.to_vec());
+    let mut h = backend_harness(fixture);
+    h.get_by_label("Provider").click();
+    h.run_steps(4);
+    h.get_by_label("windowsml-openvino").click();
+    h.run_steps(4);
+    assert_eq!(h.state().app.settings.provider, "windowsml-openvino-cpu");
+    h.get_by_label("OpenVINO Device").click();
+    h.run_steps(4);
+    assert!(h.query_by_label("Default").is_none());
+    assert!(h.query_by_label("Unspecified (legacy setting)").is_none());
 }
 
 #[cfg(feature = "tensorrt")]

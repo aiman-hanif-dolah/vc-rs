@@ -116,6 +116,17 @@ pub const FINISH_ERROR: &str =
     "Setup could not be saved. Retry after fixing the settings directory permissions.";
 
 pub const TRANSLATIONS: &[(&str, &str)] = &[
+    ("Unspecified (legacy setting)", "デバイス指定なし（旧設定）"),
+    ("Available", "利用可能"),
+    ("Unavailable", "利用不可"),
+    ("Unverified", "未確認"),
+    ("Checking OpenVINO devices...", "OpenVINOデバイスを確認中..."),
+    ("Could not verify OpenVINO devices. Hover for details.", "OpenVINOデバイスを確認できませんでした。ここにマウスを置くと詳細を表示します。"),
+    ("Selected device is unavailable. Choose an available device.", "選択中のデバイスは利用できません。利用可能なデバイスを選んでください。"),
+    ("Download OpenVINO to check available devices.", "利用可能なデバイスを確認するには、OpenVINOのダウンロードが必要です。"),
+    ("Download and check", "ダウンロードして確認"),
+    ("Downloading and preparing OpenVINO...", "OpenVINOをダウンロード・準備中..."),
+    ("Retry device check", "デバイス確認を再試行"),
     ("Voice", "声"),
     ("Audio input", "入力"),
     ("Audio output", "出力"),

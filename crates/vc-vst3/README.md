@@ -116,7 +116,16 @@ explicit providers do not fallback; they fail if the requested catalog EP is not
 present or ready.
 
 Select `windowsml-openvino` in the backend picker, then choose CPU, GPU, or NPU
-in the separate Device picker. Default leaves the hardware type unrestricted.
+in the separate Device picker. New selections start with explicit CPU. There is
+no Default option; old unrestricted states display as "Unspecified (legacy setting)"
+and retain their original behavior. The picker shows available, unavailable, or
+unverified device types. Confirmed unavailable types are disabled. Discovery
+prepares the installed EP before querying hardware; no model load is needed.
+If the EP is not installed, the picker is replaced by a "Download and check"
+action. Clicking it authorizes acquisition and then updates the device list;
+opening the settings alone never downloads an EP. Download/preparation progress
+is shown while the worker runs. Only errors expose a "Retry device check" action;
+there is no permanent refresh button. Discovery never loads a model.
 The TOML `provider` field and plugin state retain the compatible names
 `windowsml-openvino-cpu`, `windowsml-openvino-gpu`, and `windowsml-openvino-npu`.
 Old states restore both controls automatically. Load/Reload applies the choice;

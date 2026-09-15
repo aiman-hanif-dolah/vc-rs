@@ -24,6 +24,7 @@ pub mod denoise;
 pub mod dsp;
 pub mod gpu;
 pub mod model_rvc;
+pub mod openvino;
 pub mod sola;
 pub mod validation;
 

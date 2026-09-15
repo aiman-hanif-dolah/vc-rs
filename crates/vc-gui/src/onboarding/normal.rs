@@ -499,7 +499,15 @@ impl VcGui {
                         .selectable_value(&mut backend, provider, gui_provider_label(label))
                         .changed()
                     {
-                        self.settings.provider = backend.label().to_owned();
+                        // New selections are explicit. Only restored settings
+                        // retain the legacy unrestricted OpenVINO provider.
+                        self.settings.provider = if backend == Provider::WindowsMlOpenVino {
+                            Provider::WindowsMlOpenVinoCpu
+                        } else {
+                            backend
+                        }
+                        .label()
+                        .to_owned();
                         changed = true;
                     }
                 }
@@ -507,23 +515,85 @@ impl VcGui {
         if let Some(mut device) = Provider::from_name(&self.settings.provider)
             .filter(|p| p.openvino_device_label().is_some())
         {
-            egui::ComboBox::new("OpenVINO Device", lang.text("OpenVINO Device"))
-                .selected_text(lang.text(device.openvino_device_label().unwrap()))
-                .show_ui(ui, |ui| {
-                    for &candidate in Provider::OPENVINO_DEVICES {
-                        if ui
-                            .selectable_value(
-                                &mut device,
-                                candidate,
-                                lang.text(candidate.openvino_device_label().unwrap()),
-                            )
-                            .changed()
-                        {
-                            self.settings.provider = device.label().to_owned();
-                            changed = true;
+            #[cfg(not(test))]
+            self.openvino_devices.poll();
+            let availability = &self.openvino_devices.status;
+            if availability.show_picker() {
+                egui::ComboBox::new("OpenVINO Device", lang.text("OpenVINO Device"))
+                    .selected_text(if device == Provider::WindowsMlOpenVino {
+                        lang.text(device.openvino_device_label().unwrap())
+                            .to_owned()
+                    } else {
+                        format!(
+                            "{} ({})",
+                            device.openvino_device_label().unwrap(),
+                            lang.text(availability.label(device))
+                        )
+                    })
+                    .show_ui(ui, |ui| {
+                        for &candidate in Provider::OPENVINO_DEVICES {
+                            if ui
+                                .add_enabled_ui(
+                                    availability.availability(candidate) != Some(false),
+                                    |ui| {
+                                        ui.selectable_value(
+                                            &mut device,
+                                            candidate,
+                                            format!(
+                                                "{} ({})",
+                                                candidate.openvino_device_label().unwrap(),
+                                                lang.text(availability.label(candidate))
+                                            ),
+                                        )
+                                    },
+                                )
+                                .inner
+                                .changed()
+                            {
+                                self.settings.provider = device.label().to_owned();
+                                changed = true;
+                            }
                         }
-                    }
-                });
+                    });
+            }
+            let mut download = false;
+            let mut retry = false;
+            if matches!(
+                availability,
+                vc_core::openvino::DeviceStatus::DownloadRequired
+            ) {
+                ui.small(lang.text("Download OpenVINO to check available devices."));
+                download = ui.button(lang.text("Download and check")).clicked();
+            }
+            if matches!(availability, vc_core::openvino::DeviceStatus::Downloading) {
+                ui.spinner();
+                ui.small(lang.text("Downloading and preparing OpenVINO..."));
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            }
+            if matches!(
+                availability,
+                vc_core::openvino::DeviceStatus::Checking
+                    | vc_core::openvino::DeviceStatus::NotStarted
+            ) {
+                ui.small(lang.text("Checking OpenVINO devices..."));
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            }
+            if let vc_core::openvino::DeviceStatus::Unknown(error) = availability {
+                ui.small(lang.text("Could not verify OpenVINO devices. Hover for details."))
+                    .on_hover_text(error);
+                retry = ui.button(lang.text("Retry device check")).clicked();
+            }
+            if availability.availability(device) == Some(false) {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    lang.text("Selected device is unavailable. Choose an available device."),
+                );
+            }
+            if download {
+                self.openvino_devices.download_and_check();
+            } else if retry {
+                self.openvino_devices.retry();
+            }
         }
         // GPU priority now applies to every backend: a process-wide Windows
         // GPU scheduling priority class (set on engine start) plus, on the

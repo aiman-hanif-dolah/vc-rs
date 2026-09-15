@@ -242,7 +242,7 @@ pub(crate) fn try_register_catalog_ep(provider: CatalogExecutionProvider) -> Res
     }
     // Explicit provider: download/prepare the EP when the catalog lists it but it
     // is not yet Ready. Only a successful registration is cached.
-    let registered = register_catalog_ep_inner(provider)?;
+    let registered = register_catalog_ep_inner(provider, true)?;
     if registered {
         mark_catalog_ep_registered(provider);
     }
@@ -298,6 +298,50 @@ pub fn list_catalog_providers() -> Result<Vec<CatalogProviderInfo>> {
         )?;
         Ok(providers)
     })
+}
+
+/// Prepare the installed OpenVINO EP and inspect its hardware. NotReady is a
+/// normal per-process state; library paths can remain empty until EnsureReady.
+/// Return None for a listed NotPresent EP until the user authorizes acquisition.
+/// Call on a UI-owned background thread, never on an audio callback.
+pub(crate) fn probe_openvino_devices(allow_download: bool) -> Result<Option<Vec<crate::Provider>>> {
+    ensure_initialized()?;
+    let provider = CatalogExecutionProvider::OpenVino;
+    if catalog_ep_cache(provider).get().is_none() {
+        let providers = list_catalog_providers()?;
+        let entry = select_catalog_provider_info(&providers, provider)
+            .context("OpenVINO EP is not listed by Windows ML on this machine")?;
+        if entry.ready_state == CatalogReadyState::NotPresent && !allow_download {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            register_catalog_ep_inner(provider, allow_download)?,
+            "OpenVINO EP is not installed or is not listed by Windows ML"
+        );
+        mark_catalog_ep_registered(provider);
+    }
+    let env = Environment::current()?;
+    let mut available = Vec::new();
+    let mut enumerated = false;
+    for device in env.devices() {
+        enumerated = true;
+        if CatalogExecutionProvider::from_catalog_name(device.ep()?)
+            != Some(CatalogExecutionProvider::OpenVino)
+        {
+            continue;
+        }
+        for &candidate in crate::Provider::OPENVINO_DEVICES {
+            if candidate.openvino_device_type() == Some(device.hardware_device().ty())
+                && !available.contains(&candidate)
+            {
+                available.push(candidate);
+            }
+        }
+    }
+    // ort's devices() iterator suppresses GetEpDevices errors and becomes
+    // empty. Do not turn a failed enumeration into three disabled choices.
+    anyhow::ensure!(enumerated, "ONNX Runtime did not return a device list");
+    Ok(Some(available))
 }
 
 pub fn select_best_catalog_provider(
@@ -585,7 +629,10 @@ fn register_best_catalog_ep_inner() -> Result<Option<CatalogExecutionProvider>> 
     })
 }
 
-fn register_catalog_ep_inner(provider: CatalogExecutionProvider) -> Result<bool> {
+fn register_catalog_ep_inner(
+    provider: CatalogExecutionProvider,
+    allow_not_present: bool,
+) -> Result<bool> {
     with_catalog(|catalog_api, catalog| {
         let mut saw_candidate = false;
         let mut last_error = None;
@@ -594,7 +641,7 @@ fn register_catalog_ep_inner(provider: CatalogExecutionProvider) -> Result<bool>
             .filter(|candidate| candidate.provider == provider)
         {
             saw_candidate = true;
-            match try_register_candidate(catalog_api, catalog, candidate, true) {
+            match try_register_candidate(catalog_api, catalog, candidate, allow_not_present) {
                 Ok(true) => {
                     info!(
                         "registered Windows ML catalog EP {}",

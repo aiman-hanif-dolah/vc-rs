@@ -49,6 +49,7 @@ pub struct EditorState {
     /// during plugin scan, project restore, or from the audio callback.
     gpu_devices: Arc<Mutex<GpuDeviceDiscovery>>,
     gpu_discovery_thread: Option<std::thread::JoinHandle<()>>,
+    openvino_devices: vc_core::openvino::DeviceDiscovery,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -78,6 +79,7 @@ pub fn create(
             reload_waker,
             gpu_devices,
             gpu_discovery_thread,
+            openvino_devices: vc_core::openvino::DeviceDiscovery::default(),
         },
         Default::default(),
         |_, _, _| {},
@@ -171,27 +173,88 @@ fn draw_contents(ui: &mut egui::Ui, setter: &ParamSetter, state: &mut EditorStat
                         .selectable_value(&mut backend, candidate, option.to_uppercase())
                         .changed()
                     {
-                        selected_provider = backend;
+                        selected_provider = if backend == Provider::WindowsMlOpenVino {
+                            Provider::WindowsMlOpenVinoCpu
+                        } else {
+                            backend
+                        };
                         provider_changed = true;
                     }
                 }
             });
         if let Some(label) = selected_provider.openvino_device_label() {
-            ui.label("Device");
-            egui::ComboBox::from_id_salt("openvino-device")
-                .width(85.0)
-                .selected_text(label)
-                .show_ui(ui, |ui| {
-                    for &candidate in Provider::OPENVINO_DEVICES {
-                        provider_changed |= ui
-                            .selectable_value(
-                                &mut selected_provider,
-                                candidate,
-                                candidate.openvino_device_label().unwrap(),
-                            )
-                            .changed();
-                    }
-                });
+            state.openvino_devices.poll();
+            let availability = &state.openvino_devices.status;
+            if availability.show_picker() {
+                ui.label("Device");
+                egui::ComboBox::from_id_salt("openvino-device")
+                    .selected_text(if selected_provider == Provider::WindowsMlOpenVino {
+                        label.to_owned()
+                    } else {
+                        format!("{label} ({})", availability.label(selected_provider))
+                    })
+                    .show_ui(ui, |ui| {
+                        for &candidate in Provider::OPENVINO_DEVICES {
+                            provider_changed |= ui
+                                .add_enabled_ui(
+                                    availability.availability(candidate) != Some(false),
+                                    |ui| {
+                                        ui.selectable_value(
+                                            &mut selected_provider,
+                                            candidate,
+                                            format!(
+                                                "{} ({})",
+                                                candidate.openvino_device_label().unwrap(),
+                                                availability.label(candidate)
+                                            ),
+                                        )
+                                    },
+                                )
+                                .inner
+                                .changed();
+                        }
+                    });
+            }
+            let mut download = false;
+            let mut retry = false;
+            if matches!(
+                availability,
+                vc_core::openvino::DeviceStatus::DownloadRequired
+            ) {
+                ui.small("Download OpenVINO to check available devices.");
+                download = ui.button("Download and check").clicked();
+            }
+            if matches!(availability, vc_core::openvino::DeviceStatus::Downloading) {
+                ui.spinner();
+                ui.small("Downloading and preparing OpenVINO...");
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            if matches!(
+                availability,
+                vc_core::openvino::DeviceStatus::Checking
+                    | vc_core::openvino::DeviceStatus::NotStarted
+            ) {
+                ui.small("Checking OpenVINO devices...");
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            if let vc_core::openvino::DeviceStatus::Unknown(error) = availability {
+                ui.small("Could not verify OpenVINO devices. Hover for details.")
+                    .on_hover_text(error);
+                retry = ui.button("Retry device check").clicked();
+            }
+            if availability.availability(selected_provider) == Some(false) {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "Selected device is unavailable. Choose an available device.",
+                );
+            }
+            if download {
+                state.openvino_devices.download_and_check();
+            } else if retry {
+                state.openvino_devices.retry();
+            }
         }
         if provider_changed {
             state.params.settings.write().unwrap().provider = selected_provider.label().to_owned();

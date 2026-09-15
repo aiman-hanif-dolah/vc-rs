@@ -290,8 +290,12 @@ fn os_config_dir() -> Option<PathBuf> {
 mod tests {
     #[test]
     fn openvino_device_selection_survives_plugin_state_round_trip() {
-        for suffix in ["cpu", "gpu", "npu"] {
-            let name = format!("windowsml-openvino-{suffix}");
+        for name in [
+            "windowsml-openvino",
+            "windowsml-openvino-cpu",
+            "windowsml-openvino-gpu",
+            "windowsml-openvino-npu",
+        ] {
             let config: super::PluginConfig =
                 toml::from_str(&format!("provider = '{name}'")).unwrap();
             let restored: super::PluginConfig =

@@ -449,6 +449,7 @@ impl Fixture {
                 telemetry_updated_at: Instant::now(),
                 applied_chunk_ms: None,
                 gpu_devices: Arc::new(Mutex::new(GpuDeviceDiscovery::default())),
+                openvino_devices: vc_core::openvino::DeviceDiscovery::default(),
                 pth_convert: None,
                 model_download: None,
                 onboarding,

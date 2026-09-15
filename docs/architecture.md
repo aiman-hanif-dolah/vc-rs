@@ -43,8 +43,10 @@ Windows ML OpenVINO hardware selection is part of the shared `Provider` value:
 `windowsml-openvino-cpu`, `windowsml-openvino-gpu`, and `windowsml-openvino-npu`
 restrict the catalog EP device list by hardware type before session creation.
 CLI `run`/`wav` accept these through `--provider`. GUI and VST3 show one OpenVINO
-backend and a separate device picker (Default/CPU/GPU/NPU). Default preserves
-the unrestricted device list; it is not OpenVINO's AUTO mode. Both controls map
+backend and a separate device picker (CPU/GPU/NPU). New OpenVINO selections start
+with explicit CPU. Restored unrestricted settings display as "Unspecified (legacy
+setting)" and keep their device list; this is not OpenVINO's AUTO mode and cannot
+be selected anew. Both controls map
 to the existing provider names for persistence, so old settings/plugin states
 load without migration and CLI spellings remain compatible. Reload the models to apply a
 change. All model roles use this same session path. An unavailable type fails
@@ -53,6 +55,16 @@ the EP without selecting an arbitrary first device; per-adapter selection is
 not exposed yet. The legacy `windowsml-openvino` preserves its unrestricted
 device list, and Windows ML Auto retains its existing catalog/DirectML/CPU
 retry policy. ORT CPU fallback for unsupported operations remains enabled.
+GUI and VST3 query installed OpenVINO EP devices on a UI-owned background thread.
+Discovery prepares installed Ready/NotReady EPs before reading their library path
+and enumerating devices. NotReady is a normal per-process state, not evidence of
+missing hardware. Confirmed missing types are disabled. A listed NotPresent EP
+shows "Download and check" instead of unverified device choices. Only that action
+authorizes acquisition through EnsureReady, including retries of a failed download.
+The UI shows download/preparation progress and automatically displays the devices
+after completion. Errors expose a retry action, without a permanent refresh button.
+Automatic discovery never acquires a missing EP, and neither path loads a model.
+Saved unavailable selections are retained with an explanation.
 The OpenVINO GPU configuration uses model-specific preparation. ContentVec gets
 a fixed waveform shape derived from the shared chunk/context calculation; RVC
 keeps its original dynamic shape because static GPU Slice/MatMul produced wrong

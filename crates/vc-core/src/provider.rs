@@ -144,8 +144,9 @@ impl Provider {
         }
     }
 
+    /// New UI choices. Keep the unrestricted provider parseable for old state
+    /// and CLI compatibility, but do not offer it in the device picker.
     pub const OPENVINO_DEVICES: &'static [Self] = &[
-        Self::WindowsMlOpenVino,
         Self::WindowsMlOpenVinoCpu,
         Self::WindowsMlOpenVinoGpu,
         Self::WindowsMlOpenVinoNpu,
@@ -154,7 +155,7 @@ impl Provider {
     /// The unrestricted choice is not OpenVINO's AUTO device mode.
     pub fn openvino_device_label(self) -> Option<&'static str> {
         match self {
-            Self::WindowsMlOpenVino => Some("Default"),
+            Self::WindowsMlOpenVino => Some("Unspecified (legacy setting)"),
             Self::WindowsMlOpenVinoCpu => Some("CPU"),
             Self::WindowsMlOpenVinoGpu => Some("GPU"),
             Self::WindowsMlOpenVinoNpu => Some("NPU"),
