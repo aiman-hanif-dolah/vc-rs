@@ -16,6 +16,7 @@ use nice_plug::prelude::{Editor, ParamSetter};
 use nice_plug_egui::{create_egui_editor, resizable_window::ResizableWindow, widgets};
 use vc_core::gpu::{list_cuda_devices, GpuDevice};
 use vc_core::validation::CONVERSION_TIMING_LIMITS;
+use vc_core::Provider;
 
 use crate::config::PLUGIN_MIN_EXTRA_CONVERT_MS;
 use crate::params::VcRvcParams;
@@ -149,27 +150,54 @@ fn draw_contents(ui: &mut egui::Ui, setter: &ParamSetter, state: &mut EditorStat
     }
 
     ui.separator();
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Backend");
+        let mut selected_provider =
+            Provider::from_name(&provider).unwrap_or(vc_core::default_provider());
+        let mut backend = selected_provider.backend();
+        let mut provider_changed = false;
         egui::ComboBox::from_id_salt("provider")
-            .selected_text(provider.to_uppercase())
+            .selected_text(backend.label().to_uppercase())
             .show_ui(ui, |ui| {
                 // Build's base backends plus the host device's live Windows ML
                 // catalog EPs (cached in vc-core), so the package offers what is
                 // actually usable rather than a fixed per-build list.
-                for candidate in vc_core::selectable_providers() {
+                for candidate in vc_core::selectable_providers()
+                    .into_iter()
+                    .filter(|p| p.backend() == *p)
+                {
                     let option = candidate.label();
                     if ui
-                        .selectable_label(provider == option, option.to_uppercase())
-                        .clicked()
-                        && provider != option
+                        .selectable_value(&mut backend, candidate, option.to_uppercase())
+                        .changed()
                     {
-                        state.params.settings.write().unwrap().provider = option.to_string();
-                        mark_dirty(state);
+                        selected_provider = backend;
+                        provider_changed = true;
                     }
                 }
             });
-        if gpu_device_selector_visible(&provider) {
+        if let Some(label) = selected_provider.openvino_device_label() {
+            ui.label("Device");
+            egui::ComboBox::from_id_salt("openvino-device")
+                .width(85.0)
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    for &candidate in Provider::OPENVINO_DEVICES {
+                        provider_changed |= ui
+                            .selectable_value(
+                                &mut selected_provider,
+                                candidate,
+                                candidate.openvino_device_label().unwrap(),
+                            )
+                            .changed();
+                    }
+                });
+        }
+        if provider_changed {
+            state.params.settings.write().unwrap().provider = selected_provider.label().to_owned();
+            mark_dirty(state);
+        }
+        if gpu_device_selector_visible(selected_provider.label()) {
             let mut selected_gpu_device_id = gpu_device_id;
             if gpu_device_control(ui, &mut selected_gpu_device_id, &state.gpu_devices) {
                 state.params.settings.write().unwrap().gpu_device_id = selected_gpu_device_id;

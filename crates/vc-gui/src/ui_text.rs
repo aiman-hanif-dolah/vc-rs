@@ -275,7 +275,7 @@ pub const TRANSLATIONS: &[(&str, &str)] = &[
     ("Live passthrough switching requires all three models; Apply / Start after selecting them.", "実行中のパススルー切り替えには3種類のモデルが必要です。モデルを選んで「開始」または「再起動」を押してください。"),
     ("Models", "モデル"), ("PyTorch checkpoints must be converted to ONNX first.", "PyTorchチェックポイントは先にONNXへ変換してください。"),
     ("Embedder", "埋め込みモデル"), ("F0 model", "F0推定モデル"),
-    ("Provider", "処理方式"), ("GPU Priority", "GPU優先度"), ("high", "高"), ("normal", "通常"),
+    ("Provider", "処理方式"), ("OpenVINO Device", "OpenVINOデバイス"), ("Default", "既定"), ("GPU Priority", "GPU優先度"), ("high", "高"), ("normal", "通常"),
     ("Audio", "音声入出力"), ("Input backend", "入力方式"), ("Output backend", "出力方式"),
     ("ASIO uses one driver for both directions; pick the same device for input and output.", "ASIOは入出力で1つのドライバを使います。同じデバイスを選んでください。"),
     ("Input device", "入力デバイス"), ("Output device", "出力デバイス"),

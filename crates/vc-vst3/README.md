@@ -115,10 +115,13 @@ providers are also accepted: `windowsml-nvtrtx`, `windowsml-qnn`,
 explicit providers do not fallback; they fail if the requested catalog EP is not
 present or ready.
 
-Use `windowsml-openvino-cpu`, `windowsml-openvino-gpu`, or
-`windowsml-openvino-npu` in the provider picker or the TOML `provider` field to
-restrict OpenVINO to that hardware type. The choice persists with the plugin
-state and applies to every model session on Load/Reload. Missing hardware is an
+Select `windowsml-openvino` in the backend picker, then choose CPU, GPU, or NPU
+in the separate Device picker. Default leaves the hardware type unrestricted.
+The TOML `provider` field and plugin state retain the compatible names
+`windowsml-openvino-cpu`, `windowsml-openvino-gpu`, and `windowsml-openvino-npu`.
+Old states restore both controls automatically. Load/Reload applies the choice;
+RMVPE uses the documented CPU workaround for GPU/unrestricted OpenVINO, while
+ContentVec and RVC use the selected devices. Missing hardware is an
 error. Multiple devices of the selected type are passed to the EP; individual
 GPU selection is not yet exposed. The existing `windowsml-openvino` retains its
 unrestricted device list. ORT CPU fallback for unsupported operations remains

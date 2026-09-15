@@ -81,8 +81,24 @@ fn ui_catalog_providers_can_be_selected_without_exposing_cuda_device_controls() 
             h.get_by_label(lang.text("Provider")).click();
             h.run_steps(4);
             assert!(h.query_by_label("windowsml-qnn").is_none());
-            h.get_by_label(label).click();
+            for device_name in [
+                "windowsml-openvino-cpu",
+                "windowsml-openvino-gpu",
+                "windowsml-openvino-npu",
+            ] {
+                assert!(h.query_by_label(device_name).is_none());
+            }
+            let provider = Provider::from_name(label).unwrap();
+            h.get_by_label(provider.backend().label()).click();
             h.run_steps(4);
+            if let Some(device) = provider.openvino_device_label() {
+                h.get_by_label(lang.text("OpenVINO Device")).click();
+                h.run_steps(4);
+                h.get_by_label(lang.text(device)).click();
+                h.run_steps(4);
+            } else {
+                assert!(h.query_by_label(lang.text("OpenVINO Device")).is_none());
+            }
             assert_eq!(h.state().app.settings.provider, label);
             let saved = toml::to_string(&h.state().app.settings).unwrap();
             let mut restored: GuiSettings = toml::from_str(&saved).unwrap();
@@ -93,6 +109,27 @@ fn ui_catalog_providers_can_be_selected_without_exposing_cuda_device_controls() 
                 .query_by_label(lang.text("Detecting CUDA devices..."))
                 .is_none());
             h.get_by_label(lang.text("GPU Priority"));
+        }
+    }
+}
+
+#[cfg(feature = "windowsml")]
+#[test]
+fn ui_restores_openvino_hardware_without_changing_saved_provider() {
+    for lang in [text::Language::English, text::Language::Japanese] {
+        for &provider in Provider::OPENVINO_DEVICES {
+            let mut fixture = ready_main_fixture(lang);
+            fixture.app.settings.provider = provider.label().into();
+            fixture.app.onboarding.effects.catalog_providers = Provider::OPENVINO_DEVICES.to_vec();
+            let mut h = backend_harness(fixture);
+            h.get_by_label(lang.text("OpenVINO Device"));
+            assert_eq!(h.state().app.settings.provider, provider.label());
+            // Re-selecting the same backend must not reset its device choice.
+            h.get_by_label(lang.text("Provider")).click();
+            h.run_steps(4);
+            h.get_by_label("windowsml-openvino").click();
+            h.run_steps(4);
+            assert_eq!(h.state().app.settings.provider, provider.label());
         }
     }
 }

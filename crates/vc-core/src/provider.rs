@@ -133,6 +133,35 @@ impl Provider {
         self.info().name
     }
 
+    /// Backend shown in a picker. Hardware-specific persisted names remain
+    /// unchanged so old GUI settings, plugin states and CLI commands still work.
+    pub fn backend(self) -> Self {
+        match self {
+            Self::WindowsMlOpenVinoCpu
+            | Self::WindowsMlOpenVinoGpu
+            | Self::WindowsMlOpenVinoNpu => Self::WindowsMlOpenVino,
+            other => other,
+        }
+    }
+
+    pub const OPENVINO_DEVICES: &'static [Self] = &[
+        Self::WindowsMlOpenVino,
+        Self::WindowsMlOpenVinoCpu,
+        Self::WindowsMlOpenVinoGpu,
+        Self::WindowsMlOpenVinoNpu,
+    ];
+
+    /// The unrestricted choice is not OpenVINO's AUTO device mode.
+    pub fn openvino_device_label(self) -> Option<&'static str> {
+        match self {
+            Self::WindowsMlOpenVino => Some("Default"),
+            Self::WindowsMlOpenVinoCpu => Some("CPU"),
+            Self::WindowsMlOpenVinoGpu => Some("GPU"),
+            Self::WindowsMlOpenVinoNpu => Some("NPU"),
+            _ => None,
+        }
+    }
+
     /// Parse a provider from its canonical name or any alias, case-insensitively
     /// and ignoring surrounding whitespace. Returns `None` for unknown spellings
     /// so callers choose whether that is an error or a fallback. This is the one

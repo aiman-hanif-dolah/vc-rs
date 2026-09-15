@@ -42,8 +42,11 @@ together.
 Windows ML OpenVINO hardware selection is part of the shared `Provider` value:
 `windowsml-openvino-cpu`, `windowsml-openvino-gpu`, and `windowsml-openvino-npu`
 restrict the catalog EP device list by hardware type before session creation.
-CLI `run`/`wav` accept these through `--provider`; GUI and VST3 expose them in
-their provider pickers and persist the same names. Reload the models to apply a
+CLI `run`/`wav` accept these through `--provider`. GUI and VST3 show one OpenVINO
+backend and a separate device picker (Default/CPU/GPU/NPU). Default preserves
+the unrestricted device list; it is not OpenVINO's AUTO mode. Both controls map
+to the existing provider names for persistence, so old settings/plugin states
+load without migration and CLI spellings remain compatible. Reload the models to apply a
 change. All model roles use this same session path. An unavailable type fails
 instead of retrying a different type. Multiple matching devices are passed to
 the EP without selecting an arbitrary first device; per-adapter selection is

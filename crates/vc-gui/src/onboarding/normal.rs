@@ -479,8 +479,11 @@ impl VcGui {
     ) {
         let lang = self.settings.language;
         let mut changed = false;
+        let selected =
+            Provider::from_name(&self.settings.provider).unwrap_or(vc_core::default_provider());
+        let mut backend = selected.backend();
         egui::ComboBox::new("Provider", lang.text("Provider"))
-            .selected_text(gui_provider_label(&self.settings.provider))
+            .selected_text(gui_provider_label(backend.label()))
             .show_ui(ui, |ui| {
                 // Build's base backends plus the device's live Windows ML
                 // catalog EPs (cached in vc-core), so the picker offers what
@@ -489,17 +492,39 @@ impl VcGui {
                     .normal_providers()
                     .into_iter()
                     .filter(|p| gui_provider_visible(*p))
+                    .filter(|p| p.backend() == *p)
                 {
                     let label = provider.label();
-                    changed |= ui
-                        .selectable_value(
-                            &mut self.settings.provider,
-                            label.to_string(),
-                            gui_provider_label(label),
-                        )
-                        .changed();
+                    if ui
+                        .selectable_value(&mut backend, provider, gui_provider_label(label))
+                        .changed()
+                    {
+                        self.settings.provider = backend.label().to_owned();
+                        changed = true;
+                    }
                 }
             });
+        if let Some(mut device) = Provider::from_name(&self.settings.provider)
+            .filter(|p| p.openvino_device_label().is_some())
+        {
+            egui::ComboBox::new("OpenVINO Device", lang.text("OpenVINO Device"))
+                .selected_text(lang.text(device.openvino_device_label().unwrap()))
+                .show_ui(ui, |ui| {
+                    for &candidate in Provider::OPENVINO_DEVICES {
+                        if ui
+                            .selectable_value(
+                                &mut device,
+                                candidate,
+                                lang.text(candidate.openvino_device_label().unwrap()),
+                            )
+                            .changed()
+                        {
+                            self.settings.provider = device.label().to_owned();
+                            changed = true;
+                        }
+                    }
+                });
+        }
         // GPU priority now applies to every backend: a process-wide Windows
         // GPU scheduling priority class (set on engine start) plus, on the
         // TensorRT path, a CUDA stream priority. So it's shown for all builds.
