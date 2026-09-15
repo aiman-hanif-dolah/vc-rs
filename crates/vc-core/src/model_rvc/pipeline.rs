@@ -490,12 +490,32 @@ impl RvcPipeline {
                 role: LoadModelRole::ContentVec,
             },
         );
+        // Supply the shared context length without taking the all-model fixed
+        // loader: static OpenVINO RVC is numerically unsafe. Auto may retry a
+        // different EP; only the successful OpenVINO GPU attempt consumes this.
+        let contentvec_profile = if matches!(
+            config.provider,
+            Provider::WindowsMl | Provider::WindowsMlOpenVino | Provider::WindowsMlOpenVinoGpu
+        ) {
+            let input_name = inspect_contentvec_input_name(
+                config.embedder,
+                expected_feat_channels,
+                config.embedder_output,
+            )?;
+            Some(TensorRtSessionProfile::single_input(
+                ModelRole::ContentVec,
+                input_name,
+                input_samples_16k,
+            ))
+        } else {
+            None
+        };
         let embedder = HubertEmbedderSession::load(
             config.embedder,
             config.provider,
             expected_feat_channels,
             config.embedder_output,
-            None,
+            contentvec_profile,
             TensorRtRunMode::PinnedCpu,
             TensorRtSessionPurpose::Main,
         )?;
@@ -1671,6 +1691,92 @@ impl std::fmt::Debug for RvcPipeline {
 #[cfg(test)]
 mod progress_tests {
     use super::*;
+
+    #[cfg(all(windows, feature = "windowsml"))]
+    #[test]
+    #[ignore = "requires VC_RS_DIAG_MODEL/EMBEDDER/F0 and OpenVINO GPU/CPU"]
+    fn openvino_pipeline_reloads_shape_for_changed_timing() {
+        use ort::value::ValueType;
+        use std::path::PathBuf;
+        let model = PathBuf::from(std::env::var_os("VC_RS_DIAG_MODEL").unwrap());
+        let embedder = PathBuf::from(std::env::var_os("VC_RS_DIAG_EMBEDDER").unwrap());
+        let f0_model = PathBuf::from(std::env::var_os("VC_RS_DIAG_F0").unwrap());
+        for (sample_rate, chunk_ms, extra_convert_ms) in
+            [(16000, 500, 100), (44100, 30, 125), (48000, 20, 100)]
+        {
+            let chunk_samples = RvcChunkTiming::from_ms(chunk_ms, sample_rate)
+                .unwrap()
+                .input_chunk_samples;
+            let mut pipeline = RvcPipeline::load(RvcPipelineConfig {
+                model: &model,
+                embedder: &embedder,
+                embedder_output: None,
+                f0_model: &f0_model,
+                provider: Provider::WindowsMlOpenVinoGpu,
+                gpu_priority: super::super::GpuPriority::High,
+                gpu_device_id: 0,
+                sample_rate,
+                chunk_samples,
+                speaker_id: 0,
+                pitch_shift: 0.0,
+                f0: F0Config::default(),
+                input_gain: 1.0,
+                noise_gate_enabled: false,
+                noise_gate_threshold: 0.01,
+                noise_gate_shaping: NoiseGateShaping::default(),
+                output_extra_ms: 107,
+                volume_excluded_ms: 85,
+                extra_convert_ms,
+                output_gain: 1.0,
+                output_dynamics: OutputDynamicsConfig::default(),
+                progress: None,
+            })
+            .unwrap();
+            let expected = tensor_rt_model_input_samples_16k(
+                chunk_samples,
+                sample_rate,
+                107,
+                extra_convert_samples_from_ms(extra_convert_ms, pipeline.rvc_sample_rate),
+                pipeline.rvc_sample_rate,
+            );
+            let ValueType::Tensor { shape, .. } = pipeline.embedder.session.inputs()[0].dtype()
+            else {
+                panic!("waveform tensor required");
+            };
+            assert_eq!(&shape[..], &[1, expected as i64]);
+            assert_eq!(pipeline.pitch.provider, Provider::WindowsMlOpenVinoCpu);
+            assert!(pipeline.rvc.session.as_ref().unwrap().inputs().iter().any(|input| {
+                matches!(input.dtype(), ValueType::Tensor { shape, .. } if shape.iter().any(|&d| d < 0))
+            }), "ContentVec specialization must not fix the RVC graph");
+            let mut audio = Vec::new();
+            let mut pitch = Vec::new();
+            assert!(pipeline
+                .process(
+                    &vec![0.0; chunk_samples + 1],
+                    sample_rate,
+                    &mut audio,
+                    &mut pitch
+                )
+                .is_err());
+            assert!(pipeline
+                .process(
+                    &vec![0.0; chunk_samples],
+                    sample_rate + 1,
+                    &mut audio,
+                    &mut pitch
+                )
+                .is_err());
+            pipeline
+                .process(
+                    &vec![0.0; chunk_samples],
+                    sample_rate,
+                    &mut audio,
+                    &mut pitch,
+                )
+                .unwrap();
+            assert!(!audio.is_empty() && audio.iter().chain(&pitch).all(|v| v.is_finite()));
+        }
+    }
 
     #[test]
     fn process_timing_rejects_rate_and_chunk_changes_before_mutating_state() {

@@ -1785,12 +1785,104 @@ impl RvcModelSession {
     }
 }
 
+// Preserve the physical waveform contract at session creation, including
+// already-static axes. A shared symbolic name cannot represent two sizes.
+#[cfg(all(feature = "ort", any(test, all(windows, feature = "windowsml"))))]
+fn contentvec_dimension_overrides(
+    shape: &[i64],
+    symbols: &[&str],
+    expected: &[usize],
+) -> Result<std::collections::BTreeMap<String, i64>> {
+    anyhow::ensure!(
+        shape.len() == 2 && expected.len() == 2 && symbols.len() == 2,
+        "ContentVec requires a rank-2 waveform input [batch, samples]"
+    );
+    let mut overrides = std::collections::BTreeMap::new();
+    for (axis, &size) in expected.iter().enumerate() {
+        anyhow::ensure!(size > 0, "ContentVec input dimensions must be positive");
+        let size = i64::try_from(size)?;
+        if shape[axis] >= 0 {
+            anyhow::ensure!(
+                shape[axis] == size,
+                "ContentVec static axis {axis} is {}, but this chunk/context requires {size}; reload with compatible timing or model",
+                shape[axis]
+            );
+        } else {
+            let symbol = symbols[axis];
+            anyhow::ensure!(
+                !symbol.is_empty(),
+                "ContentVec dynamic axis {axis} has no symbolic name; OpenVINO fixed shape requires named dimensions"
+            );
+            if let Some(previous) = overrides.insert(symbol.to_owned(), size) {
+                anyhow::ensure!(
+                    previous == size,
+                    "conflicting ContentVec dimension {symbol}"
+                );
+            }
+        }
+    }
+    Ok(overrides)
+}
+
+#[cfg(all(feature = "ort", windows, feature = "windowsml"))]
+fn with_openvino_contentvec_shape(
+    mut builder: ort::session::builder::SessionBuilder,
+    path: &Path,
+    profile: Option<&TensorRtSessionProfile>,
+) -> Result<ort::session::builder::SessionBuilder> {
+    let profile =
+        profile.context("OpenVINO GPU ContentVec requires the shared input shape profile")?;
+    anyhow::ensure!(
+        matches!(profile.role, ModelRole::ContentVec),
+        "wrong ContentVec profile role"
+    );
+    // ORT exposes symbolic names that the lightweight model inspector does not
+    // retain. Probe on CPU only at load time; do not rewrite the source ONNX or
+    // introduce graph edits/cache files into the realtime processing path.
+    let probe = Session::builder()?
+        .with_intra_threads(1)
+        .map_err(|err| anyhow!(err.to_string()))?
+        .with_optimization_level(GraphOptimizationLevel::Disable)
+        .map_err(|err| anyhow!(err.to_string()))?
+        .commit_from_file(path)?;
+    anyhow::ensure!(
+        probe.inputs().len() == 1,
+        "ContentVec requires a single waveform input"
+    );
+    let input = &probe.inputs()[0];
+    let ValueType::Tensor {
+        shape,
+        dimension_symbols,
+        ..
+    } = input.dtype()
+    else {
+        bail!("ContentVec waveform input must be a tensor");
+    };
+    let expected = profile.fixed_input_dims(input.name())?;
+    let symbols = (0..shape.len())
+        .map(|axis| dimension_symbols[axis].as_str())
+        .collect::<Vec<_>>();
+    for (symbol, size) in contentvec_dimension_overrides(shape, &symbols, expected)? {
+        builder = builder
+            .with_dimension_override(symbol, size)
+            .map_err(|err| anyhow!(err.to_string()))?;
+    }
+    info!(
+        "fixed OpenVINO ContentVec input={} shape={} model={} (RVC shape unchanged)",
+        input.name(),
+        format_usize_shape(expected),
+        path.display()
+    );
+    Ok(builder)
+}
+
 #[cfg(feature = "ort")]
 #[cfg(all(windows, feature = "windowsml"))]
 fn with_windows_ml_catalog_ep(
-    builder: ort::session::builder::SessionBuilder,
+    mut builder: ort::session::builder::SessionBuilder,
     provider: Provider,
     catalog_ep: crate::windows_ml::CatalogExecutionProvider,
+    role: ModelRole,
     path: &Path,
     tensor_rt_profile: Option<&TensorRtSessionProfile>,
     // Skip the NvTensorRtRtx runtime cache (its on-destroy write fast-fails for
@@ -1845,18 +1937,23 @@ fn with_windows_ml_catalog_ep(
     let ep_name = devices[0].ep()?.to_string();
     let mut options = Vec::<(String, String)>::new();
     if catalog_ep == crate::windows_ml::CatalogExecutionProvider::OpenVino {
-        // Apply to every role, including Auto. ACCURACY alone still produced
-        // rounded NSF phase on the catalog GPU EP; explicitly request f32.
-        // Phase error carries across chunks (time_state); the GPU tiny-RVC test
-        // compares against ORT CPU to catch it. Keep device selection in with_devices.
+        // Decide from the filtered device list, after Auto resolves its current
+        // candidate. CPU/NPU-only selections and Auto's later retries retain
+        // their original shapes. Never specialize the RVC generator here.
+        if matches!(role, ModelRole::ContentVec)
+            && devices
+                .iter()
+                .any(|device| device.hardware_device().ty() == ort::memory::DeviceType::GPU)
+        {
+            builder = with_openvino_contentvec_shape(builder, path, tensor_rt_profile)?;
+        }
+        // Keep the legacy accuracy request (ignored by some catalog EP versions),
+        // but leave GPU inference precision to the EP after listening validation.
+        // RMVPE remains on OpenVINO CPU;
+        // the RVC phase path receives no separate precision override.
         options.push((format!("{ep_name}.precision"), "ACCURACY".to_owned()));
-        options.push((
-            format!("{ep_name}.load_config"),
-            r#"{"GPU":{"INFERENCE_PRECISION_HINT":"f32","EXECUTION_MODE_HINT":"ACCURACY"}}"#
-                .to_owned(),
-        ));
         info!(
-            "using OpenVINO precision=ACCURACY GPU inference_precision=f32 for {}",
+            "using OpenVINO precision=ACCURACY without a GPU precision override for {}",
             path.display()
         );
     }
@@ -2006,8 +2103,9 @@ fn load_windows_ml_auto<T>(
 }
 
 // The catalog OpenVINO GPU returned constant 10 Hz from RMVPE even with
-// explicit f32, while ORT CPU tracked the input pitch. Keep just this stage on
-// CPU until that incompatibility is resolved. The unrestricted OpenVINO choice
+// explicit f32. OpenVINO CPU tracks pitch and improves this stage's latency in
+// the native validation; keep its threads/streams automatic, without LATENCY.
+// The unrestricted OpenVINO choice
 // can include GPU, including when selected by Windows ML Auto. Hardware-specific
 // CPU/NPU choices are unchanged. See openvino_support_model_diagnostic.
 fn provider_for_model_role(provider: Provider, role: ModelRole) -> Provider {
@@ -2017,7 +2115,7 @@ fn provider_for_model_role(provider: Provider, role: ModelRole) -> Provider {
             Provider::WindowsMlOpenVino | Provider::WindowsMlOpenVinoGpu
         )
     {
-        Provider::WindowsMlCpu
+        Provider::WindowsMlOpenVinoCpu
     } else {
         provider
     }
@@ -2158,6 +2256,7 @@ fn load_session_once(
                     builder,
                     provider,
                     catalog_ep,
+                    role,
                     path,
                     tensor_rt_profile,
                     disable_nvtrtx_runtime_cache,
@@ -2272,6 +2371,72 @@ pub(super) fn describe_value_type(value_type: &ValueType) -> String {
 #[cfg(all(test, feature = "ort"))]
 mod windows_ml_auto_tests {
     use super::*;
+
+    #[test]
+    fn openvino_role_policy_preserves_explicit_devices_and_other_backends() {
+        for provider in [
+            Provider::Cpu,
+            Provider::Cuda,
+            Provider::TensorRt,
+            Provider::WindowsMl,
+            Provider::WindowsMlCpu,
+            Provider::WindowsMlDirectMl,
+            Provider::WindowsMlOpenVinoCpu,
+            Provider::WindowsMlOpenVinoNpu,
+            Provider::WindowsMlNvTensorRtRtx,
+            Provider::WindowsMlQnn,
+        ] {
+            for role in [ModelRole::ContentVec, ModelRole::Rmvpe, ModelRole::Rvc] {
+                assert_eq!(provider_for_model_role(provider, role), provider);
+            }
+        }
+        for provider in [Provider::WindowsMlOpenVino, Provider::WindowsMlOpenVinoGpu] {
+            assert_eq!(
+                provider_for_model_role(provider, ModelRole::Rmvpe),
+                Provider::WindowsMlOpenVinoCpu
+            );
+            assert_eq!(
+                provider_for_model_role(provider, ModelRole::ContentVec),
+                provider
+            );
+            assert_eq!(provider_for_model_role(provider, ModelRole::Rvc), provider);
+        }
+    }
+
+    #[test]
+    fn openvino_auto_role_mapping_applies_to_each_actual_attempt() {
+        let mut roles = Vec::new();
+        let selected = load_windows_ml_auto(Ok(Some(Provider::WindowsMlOpenVino)), |candidate| {
+            let actual = provider_for_model_role(candidate, ModelRole::Rmvpe);
+            roles.push(actual);
+            if actual == Provider::WindowsMlOpenVinoCpu {
+                bail!("CPU EP compilation failed");
+            }
+            Ok(actual)
+        })
+        .unwrap();
+        assert_eq!(selected, Provider::WindowsMlDirectMl);
+        assert_eq!(
+            roles,
+            [Provider::WindowsMlOpenVinoCpu, Provider::WindowsMlDirectMl]
+        );
+    }
+
+    #[test]
+    fn openvino_contentvec_shape_rejects_incompatible_model_metadata() {
+        assert!(contentvec_dimension_overrides(&[1, 320], &["", ""], &[1, 640]).is_err());
+        assert!(contentvec_dimension_overrides(&[1, -1], &["", ""], &[1, 640]).is_err());
+        assert!(contentvec_dimension_overrides(&[-1, -1], &["same", "same"], &[1, 640]).is_err());
+        assert!(contentvec_dimension_overrides(&[1, -1, 1], &["", "time", ""], &[1, 640]).is_err());
+        assert!(contentvec_dimension_overrides(&[1, -1], &["", "time"], &[1, 0]).is_err());
+        let fixed = contentvec_dimension_overrides(&[1, 640], &["", ""], &[1, 640]).unwrap();
+        assert!(fixed.is_empty());
+        for samples in [3840, 4480, 11520, 35520] {
+            let dims =
+                contentvec_dimension_overrides(&[1, -1], &["", "time"], &[1, samples]).unwrap();
+            assert_eq!(dims["time"], samples as i64);
+        }
+    }
 
     #[test]
     fn windows_ml_auto_stops_after_first_success_for_each_catalog_ep() {

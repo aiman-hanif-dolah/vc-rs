@@ -53,13 +53,27 @@ the EP without selecting an arbitrary first device; per-adapter selection is
 not exposed yet. The legacy `windowsml-openvino` preserves its unrestricted
 device list, and Windows ML Auto retains its existing catalog/DirectML/CPU
 retry policy. ORT CPU fallback for unsupported operations remains enabled.
-There is one model-role workaround: RMVPE uses ORT CPU for
+The OpenVINO GPU configuration uses model-specific preparation. ContentVec gets
+a fixed waveform shape derived from the shared chunk/context calculation; RVC
+keeps its original dynamic shape because static GPU Slice/MatMul produced wrong
+results. Shape overrides are applied only when the current OpenVINO candidate's
+filtered device list includes GPU. Explicit CPU/NPU and Auto's DirectML/CPU
+retries keep their original shapes. No LATENCY hint is added.
+RMVPE uses OpenVINO CPU for
 `windowsml-openvino-gpu` and unrestricted `windowsml-openvino` (also when Auto
 selects that catalog EP). The GPU returned constant 10 Hz for voiced test inputs
 even with explicit f32, causing incorrect excitation pitch. ContentVec and RVC
-retain the selected OpenVINO devices. Explicit OpenVINO CPU/NPU are unchanged.
+retain the selected OpenVINO devices. CPU threads and streams stay automatic
+under the common ACCURACY request. Explicit OpenVINO CPU/NPU are unchanged.
 This decision and its warning run only at session creation; there is no
 per-chunk retry or second conversion pipeline.
+ContentVec's symbolic dimension override is built at load time from a CPU metadata
+probe; the source ONNX is not modified. Unnamed dynamic dimensions, conflicting
+symbols, and incompatible static dimensions fail explicitly. The shared timing
+contract still requires reloading when chunk size, sample rate or context changes.
+See [ContentVec validation](openvino-contentvec-validation_ja.md) for the measured
+small audio differences; accepting this configuration does not make those
+earlier comparison failures disappear.
 Local RMVPE diagnostics still returned 10 Hz with ORT graph optimizations
 disabled or basic-only, memory patterns disabled, and OpenVINO
 `disable_dynamic_shapes=True` (all with explicit GPU f32). These option changes
@@ -72,14 +86,15 @@ by `with_devices`) derives OpenVINO device settings from the selected handles;
 do not substitute the standalone OpenVINO EP's `device_type` option here.
 Device discovery/filtering and diagnostics run during model loading on the
 worker, never in an audio callback. All OpenVINO model sessions request
-`precision=ACCURACY`, including when Windows ML Auto selects OpenVINO, to
-prioritize numerical accuracy over reduced-precision performance defaults.
-The GPU `load_config` also sets `INFERENCE_PRECISION_HINT=f32` and
-`EXECUTION_MODE_HINT=ACCURACY`: the catalog GPU EP still rounded streaming NSF
-phase with `precision=ACCURACY` alone. Explicit f32 eliminated the tiny-model
-phase error against ORT CPU; the GPU test checks phase and audio agreement.
-Reload models after rebuilding to apply this setting; real-model audio and
-latency still need validation on the selected hardware.
+`precision=ACCURACY`, including when Windows ML Auto selects OpenVINO, but
+the tested catalog EP reports that this legacy option is ignored. It does not
+prove the effective CPU or GPU precision. GPU `load_config` precision overrides
+were removed after user listening validation found improved speed with little
+audible difference while RMVPE remained on CPU. No separate phase precision is
+forced. Earlier explicit f32 removed a tiny-model phase discrepancy; that
+numerical result does not establish its audible impact in the current pipeline.
+Reload models after rebuilding to apply the selected policy. CPU shapes remain
+dynamic; fixed CPU profiles have not shown sufficient benefit to adopt.
 
 Opt-in `openvino_cpu_tiny_rvc`, `openvino_gpu_tiny_rvc`, and
 `openvino_npu_tiny_rvc` tests exercise the shared loader and repeated inference

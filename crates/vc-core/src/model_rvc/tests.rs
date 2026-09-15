@@ -16,16 +16,33 @@ fn openvino_support_model_diagnostic() {
     let f0_path = PathBuf::from(std::env::var_os("VC_RS_DIAG_F0").unwrap());
     let mut reference = Vec::new();
     for provider in [Provider::WindowsMlCpu, Provider::WindowsMlOpenVinoGpu] {
+        let input_name =
+            super::inspect::inspect_contentvec_input_name(&embedder_path, 768, None).unwrap();
         let mut embedder = HubertEmbedderSession::load(
             &embedder_path,
             provider,
             768,
             None,
-            None,
+            Some(TensorRtSessionProfile::single_input(
+                ModelRole::ContentVec,
+                input_name,
+                11520,
+            )),
             TensorRtRunMode::PinnedCpu,
             TensorRtSessionPurpose::Main,
         )
         .unwrap();
+        if provider == Provider::WindowsMlOpenVinoGpu {
+            let ort::value::ValueType::Tensor { shape, .. } = embedder.session.inputs()[0].dtype()
+            else {
+                panic!("ContentVec tensor input required");
+            };
+            assert_eq!(&shape[..], &[1, 11520]);
+            let mut ignored_output = FeatureTensor::default();
+            assert!(embedder
+                .extract_into(&[0.0; 320], &mut ignored_output)
+                .is_err());
+        }
         let mut pitch = RmvpePitchSession::load(
             &f0_path,
             provider,
@@ -34,6 +51,9 @@ fn openvino_support_model_diagnostic() {
             TensorRtSessionPurpose::Main,
         )
         .unwrap();
+        if provider == Provider::WindowsMlOpenVinoGpu {
+            assert_eq!(pitch.provider, Provider::WindowsMlOpenVinoCpu);
+        }
         // Identical harmonic inputs isolate the support models from joining,
         // microphone I/O and RVC source-noise/phase state.
         for (index, frequency) in [0.0f32, 160.0, 220.0].into_iter().enumerate() {

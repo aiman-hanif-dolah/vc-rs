@@ -27,6 +27,9 @@ pub struct FiniteChunk {
 pub struct FiniteOutput {
     pub audio: Vec<f32>,
     pub chunks: Vec<FiniteChunk>,
+    /// The first model call is silent preroll, not the first retained input chunk.
+    /// Preserve its timing so offline reports do not hide lazy compilation.
+    pub preroll: Option<ChunkStats>,
 }
 
 /// Convert a finite mono signal using a newly constructed converter. Ownership
@@ -57,6 +60,7 @@ pub fn convert_finite<M: VoiceModel>(
         return Ok(FiniteOutput {
             audio: Vec::new(),
             chunks: Vec::new(),
+            preroll: None,
         });
     }
     let target_len = usize::try_from(
@@ -65,7 +69,7 @@ pub fn convert_finite<M: VoiceModel>(
     .context("finite output length overflow")?;
 
     let zeros = vec![0.0; input_chunk_samples];
-    converter.prime(&zeros, input_sample_rate)?;
+    let preroll = Some(converter.prime(&zeros, input_sample_rate)?);
     let content_delay = converter.output_content_delay_samples();
     let output_resample_delay = converter.output_resample_delay_samples().unwrap_or(0);
     let end = content_delay
@@ -130,7 +134,11 @@ pub fn convert_finite<M: VoiceModel>(
     );
     audio.copy_within(content_delay..end, 0);
     audio.truncate(target_len);
-    Ok(FiniteOutput { audio, chunks })
+    Ok(FiniteOutput {
+        audio,
+        chunks,
+        preroll,
+    })
 }
 
 #[cfg(test)]

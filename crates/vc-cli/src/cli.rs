@@ -397,6 +397,12 @@ pub struct WavArgs {
         help = "Write a per-chunk SOLA/PSOLA join report (CSV) for offline seam analysis"
     )]
     pub join_report: Option<PathBuf>,
+    /// Write offline stage/chunk timing samples and summaries as JSON.
+    #[arg(long, value_name = "PATH")]
+    pub performance_report: Option<PathBuf>,
+    /// Initial input chunks excluded from steady-state timing (preroll is separate).
+    #[arg(long, default_value_t = 3, requires = "performance_report")]
+    pub performance_warmup_chunks: usize,
 }
 
 #[derive(Debug, Parser)]
@@ -1633,6 +1639,33 @@ mod tests {
     fn doctor() {
         let cli = Cli::try_parse_from(["vc-rs", "doctor"]).unwrap();
         assert!(matches!(cli.command, Command::Doctor));
+    }
+
+    #[test]
+    fn performance_warmup_requires_opt_in_report() {
+        let base = [
+            "vc-rs",
+            "wav",
+            "--input",
+            "in.wav",
+            "--output",
+            "out.wav",
+            "--model",
+            "rvc.onnx",
+            "--embedder",
+            "contentvec.onnx",
+            "--f0-model",
+            "rmvpe.onnx",
+        ];
+        assert!(Cli::try_parse_from(base).is_ok());
+        let mut explicit = base.to_vec();
+        explicit.extend(["--performance-warmup-chunks", "0"]);
+        assert!(Cli::try_parse_from(&explicit).is_err());
+        explicit.extend(["--performance-report", "timing.json"]);
+        let Command::Wav(args) = Cli::try_parse_from(explicit).unwrap().command else {
+            panic!("expected wav command");
+        };
+        assert_eq!(args.performance_warmup_chunks, 0);
     }
 
     #[test]

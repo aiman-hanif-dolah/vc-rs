@@ -21,6 +21,10 @@ pub struct ChunkOutputConfig {
 pub struct ChunkStats {
     pub silent: bool,
     pub inference_time: Duration,
+    /// Existing model-stage timers, forwarded without extra timing or allocation.
+    pub embedder_time: Duration,
+    pub pitch_time: Duration,
+    pub rvc_time: Duration,
     /// Worker time including model processing, joining and output resampling.
     pub processing_time: Duration,
     /// Nominal retained content in output samples, excluding chunk accumulation,
@@ -217,6 +221,9 @@ fn chunk_stats(meta: &ModelOutput, model_output_samples: usize) -> ChunkStats {
     ChunkStats {
         silent: meta.silent,
         inference_time: meta.inference_time,
+        embedder_time: meta.embedder_time,
+        pitch_time: meta.pitch_time,
+        rvc_time: meta.rvc_time,
         processing_time: Duration::ZERO,
         content_delay_samples: None,
         input_rms: meta.input_rms,
@@ -299,9 +306,9 @@ mod tests {
             model_input_samples: audio.len(),
             sample_rate,
             inference_time: Duration::from_micros(123),
-            embedder_time: Duration::ZERO,
-            pitch_time: Duration::ZERO,
-            rvc_time: Duration::ZERO,
+            embedder_time: Duration::from_micros(20),
+            pitch_time: Duration::from_micros(30),
+            rvc_time: Duration::from_micros(70),
             input_rms: 0.25,
             voiced_ratio: 0.0,
             applied_output_gain: 1.0,
@@ -325,6 +332,9 @@ mod tests {
         assert_eq!(out.len(), 4);
         assert!(stats.silent);
         assert_eq!(stats.inference_time, Duration::from_micros(123));
+        assert_eq!(stats.embedder_time, Duration::from_micros(20));
+        assert_eq!(stats.pitch_time, Duration::from_micros(30));
+        assert_eq!(stats.rvc_time, Duration::from_micros(70));
         assert!(stats.processing_time > Duration::ZERO);
         assert_eq!(
             stats.content_delay_samples,

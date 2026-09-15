@@ -353,3 +353,43 @@ Test exes link the native TensorRT shim, so the TensorRT bin must be on PATH
 (via `activate.ps1`) or they fail to launch with `STATUS_DLL_NOT_FOUND`. To run
 tests without a GPU stack, set `VC_RS_ENABLE_NATIVE_TENSORRT=0` (or use
 `scripts/verify.ps1 -NoNativeTensorRT`).
+## WAV 処理時間の比較
+
+`benchmark-wav.ps1` は同じ入力・モデル・設定で、新しい CLI プロセスを起動して
+繰り返し計測します。事前に対象バックエンドの release CLI をビルドしてください。
+
+```powershell
+./scripts/benchmark-wav.ps1 -InputWav speech.wav -Model voice.onnx `
+  -Embedder assets/content_vec_500.onnx -F0Model assets/rmvpe.onnx `
+  -Provider windowsml-openvino-gpu -ChunkMs 500 -Repeat 3 `
+  -OutputDirectory target/benchmark-gpu
+```
+
+出力には変換 WAV、各回の JSON とログ、`environment.json`、カタログ EP の
+バージョン・パスを取得する `run-N-catalog.log`、`doctor.log` を保存します。
+カタログが情報を返さない場合や非対応ビルドではログと終了コードから取得不可と判断してください。
+環境情報には GPU ドライバ、OS、
+実行ファイル・入力・モデルの SHA256、引数、Git 状態、キャッシュについての注記を含みます。
+外部 tensor を使う ONNX は sidecar の保存・ハッシュ確認も別途必要です。
+`-CacheNote` に実際の条件を記録してください。スクリプトはキャッシュを削除しないため、
+各回はプロセス起動直後ですが「空キャッシュでの計測」とは限りません。
+
+単発では `vc-rs wav ... --performance-report timing.json` を使えます。
+既存のレポートは上書きしません。途中で失敗すると空のレポートが残る場合があります。
+JSON はロード全体、ロード進捗イベント、最初の無音プリロール、初期入力チャンク、
+定常入力チャンク、末尾排出を分離します。`--performance-warmup-chunks`（既定 3）は
+定常集計から除く入力チャンク数で、追加推論や音声処理の変更は行いません。
+短い入力で定常サンプルがなければ統計値は `null` になります。
+
+ContentVec、RMVPE、RVC、推論全体、チャンク処理全体について平均・p95・p99・最大と
+チャンク時間を超えた回数を記録します。百分位は nearest-rank です。
+モデル段階の同期的なホスト経過時間には、その段階で行う転送・同期も含みます。
+チャンク全体は結合・リサンプリングも含み、WAV I/O、事前の RNNoise 処理、
+デバイス待ち・実時間スケジューリングは含みません。超過回数はオフラインの予算比較で、
+実際の音切れ回数ではありません。ロードイベントの間隔には準備処理も含まれるため、
+モデル単体のロード時間とは扱わないでください。
+
+OpenVINO GPU 選択時も現在 RMVPE は CPU で実行されます。指定 provider や段階名だけでは
+GPU 演算割り当てを証明できません。CPU と比較する場合は同じパラメータで別の出力先に
+実行し、音質は既存の `compare-audio.ps1` / `tools/audio_compare` で別途比較してください。
+定常性能の判断には十分に長い実音声と複数回の測定を使ってください。

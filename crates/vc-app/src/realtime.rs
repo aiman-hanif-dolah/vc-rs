@@ -923,6 +923,9 @@ impl PassthroughProcessor {
         Ok(ChunkStats {
             silent: false,
             inference_time: Duration::ZERO,
+            embedder_time: Duration::ZERO,
+            pitch_time: Duration::ZERO,
+            rvc_time: Duration::ZERO,
             processing_time: started.elapsed(),
             content_delay_samples: None,
             input_rms,

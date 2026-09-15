@@ -3,6 +3,7 @@ mod doctor;
 mod engine;
 mod engine_cache;
 mod join_report;
+mod performance_report;
 #[cfg(all(windows, feature = "windowsml"))]
 mod windows_ml_eps;
 

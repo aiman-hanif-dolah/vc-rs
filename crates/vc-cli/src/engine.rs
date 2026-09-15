@@ -142,6 +142,19 @@ fn smoothing_kind(smoother: Smoother) -> SmoothingKind {
 }
 
 pub fn run_wav(args: WavArgs) -> Result<()> {
+    let report_file = args
+        .performance_report
+        .as_deref()
+        .map(crate::performance_report::create)
+        .transpose()?;
+    if let Some(path) = &args.performance_report {
+        let report_path = path.canonicalize()?;
+        for output_path in std::iter::once(&args.output).chain(args.join_report.iter()) {
+            if output_path.canonicalize().is_ok_and(|p| p == report_path) {
+                anyhow::bail!("performance report must differ from WAV and join report outputs");
+            }
+        }
+    }
     args.validate_conversion_options()
         .map_err(anyhow::Error::msg)?;
     let (mut samples, spec) = read_wav_mono(&args.input)?;
@@ -170,6 +183,13 @@ pub fn run_wav(args: WavArgs) -> Result<()> {
     let gpu_priority: GpuPriority = args.gpu_priority.into();
     set_process_gpu_priority(gpu_priority);
     set_process_power_throttling(gpu_priority == GpuPriority::High);
+    let load_started = Instant::now();
+    let load_events = std::cell::RefCell::new(Vec::new());
+    let progress = |event| {
+        load_events.borrow_mut().push(serde_json::json!({
+            "event": format!("{event:?}"), "elapsed_ms": load_started.elapsed().as_secs_f64() * 1000.0
+        }));
+    };
     let pipeline_config = RvcPipelineConfig {
         model: &args.model,
         embedder: &args.embedder,
@@ -207,12 +227,16 @@ pub fn run_wav(args: WavArgs) -> Result<()> {
             target_output_rms: args.target_output_rms,
             max_output_gain: args.max_output_gain,
         },
-        progress: None,
+        progress: args
+            .performance_report
+            .as_ref()
+            .map(|_| &progress as &dyn Fn(_)),
     };
     // GTCRN stays on the shared 16 kHz seam. The finite core adapter drains and
     // removes its declared content delay together with the other streaming
     // buffers, rather than truncating that delayed speech at the clip end.
     let model = load_wav_pipeline(denoiser_mode, args.gtcrn_model.as_deref(), pipeline_config)?;
+    let load_duration = load_started.elapsed();
     let converter = ChunkConverter::new(
         model,
         ChunkOutputConfig {
@@ -225,6 +249,17 @@ pub fn run_wav(args: WavArgs) -> Result<()> {
         },
     );
     let converted = convert_finite(converter, &samples, spec.sample_rate, chunk_samples)?;
+    let performance = report_file.as_ref().map(|_| {
+        let mut report = crate::performance_report::build(&converted, args.performance_warmup_chunks,
+            chunk_samples as f64 / f64::from(spec.sample_rate) * 1000.0, load_duration);
+        report["load_progress_events"] = serde_json::json!(load_events.into_inner());
+        report["load_progress_scope"] = serde_json::json!("Progress boundaries include preparation; intervals are not isolated model load measurements.");
+        report["requested_provider"] = serde_json::json!(args.provider.label());
+        report["configuration"] = serde_json::json!(format!("{args:?}"));
+        report["sample_rate"] = serde_json::json!(spec.sample_rate);
+        report["catalog_after_conversion"] = crate::performance_report::catalog_snapshot();
+        report
+    });
     let output = converted.audio;
     let chunks = converted
         .chunks
@@ -254,6 +289,10 @@ pub fn run_wav(args: WavArgs) -> Result<()> {
         }
     }
     write_wav_mono(&args.output, &output, spec.sample_rate)?;
+    if let (Some(file), Some(report)) = (report_file, performance) {
+        serde_json::to_writer_pretty(file, &report)
+            .context("failed to write performance report")?;
+    }
     info!(
         "wrote {} samples at {} Hz to {} (chunks={})",
         output.len(),
