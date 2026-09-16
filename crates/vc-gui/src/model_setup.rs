@@ -70,7 +70,7 @@ pub fn discover_gtcrn(dir: &mut String, roots: &[PathBuf]) -> bool {
 pub fn cache_dir() -> Result<PathBuf, String> {
     std::env::var_os("LOCALAPPDATA")
         .or_else(|| std::env::var_os("APPDATA"))
-        .map(|dir| PathBuf::from(dir).join("vc-rs").join("models"))
+        .map(|dir| PathBuf::from(dir).join("Sooara").join("models"))
         .ok_or_else(|| "Cannot locate the user model directory (LOCALAPPDATA / APPDATA).".into())
 }
 

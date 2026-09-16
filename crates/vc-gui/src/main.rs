@@ -34,7 +34,7 @@ fn main() -> eframe::Result {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
     eframe::run_native(
-        "vc-rs",
+        "Sooara",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([880.0, 680.0])
@@ -178,6 +178,7 @@ struct GuiSettings {
     speaker_id: i64,
     input_gain: f32,
     output_gain: f32,
+    #[serde(default = "legacy_denoiser_default")]
     denoiser: String,
     #[serde(default)]
     gtcrn_model_dir: String,
@@ -193,6 +194,10 @@ struct GuiSettings {
     target_output_rms: f32,
     max_output_gain: f32,
     passthrough: bool,
+}
+
+fn legacy_denoiser_default() -> String {
+    "off".to_string()
 }
 
 impl Default for GuiSettings {
@@ -232,7 +237,7 @@ impl Default for GuiSettings {
             speaker_id: 0,
             input_gain: 1.0,
             output_gain: 1.0,
-            denoiser: "off".to_string(),
+            denoiser: "rnnoise".to_string(),
             gtcrn_model_dir: String::new(),
             noise_gate_enabled: false,
             noise_gate_threshold: 0.01,
@@ -244,12 +249,20 @@ impl Default for GuiSettings {
             auto_output_gain: false,
             target_output_rms: 0.03,
             max_output_gain: 512.0,
-            passthrough: false,
+            passthrough: true,
         }
     }
 }
 
 impl GuiSettings {
+    fn processing_chunk_ms(&self) -> u32 {
+        if self.passthrough && self.model.trim().is_empty() {
+            20
+        } else {
+            self.chunk_ms
+        }
+    }
+
     fn normalize_gui_managed_settings(&mut self) {
         // WASAPI exclusive mode and these smoothing timings remain available to the
         // CLI, but the GUI intentionally pins them until their safe tuning and
@@ -327,7 +340,7 @@ impl GuiSettings {
             wasapi_input_exclusive: false,
             wasapi_output_exclusive: false,
             wasapi_buffer_ms: 0,
-            chunk_ms: self.chunk_ms,
+            chunk_ms: self.processing_chunk_ms(),
             crossfade_ms: GUI_CROSSFADE_MS,
             sola_search_ms: GUI_SOLA_SEARCH_MS,
             smoother: if self.smoother == "psola" {
@@ -1075,7 +1088,7 @@ fn path_option(value: &str) -> Option<PathBuf> {
 fn settings_path() -> Result<PathBuf, String> {
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
-        .map(|dir| dir.join("vc-rs").join("gui.toml"))
+        .map(|dir| dir.join("Sooara").join("gui.toml"))
         .ok_or_else(|| "APPDATA is not set; GUI settings cannot be persisted".to_string())
 }
 
@@ -1286,6 +1299,25 @@ fn gui_provider_label(provider: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sooara_starts_with_model_free_noise_suppression() {
+        let settings = GuiSettings::default();
+        assert!(settings.passthrough);
+        assert_eq!(settings.denoiser, "rnnoise");
+        assert_eq!(settings.processing_chunk_ms(), 20);
+        assert_eq!(settings.realtime().unwrap().chunk_ms, 20);
+    }
+
+    #[test]
+    fn voice_model_sessions_keep_the_configured_chunk_size() {
+        let settings = GuiSettings {
+            model: "voice.onnx".into(),
+            chunk_ms: 120,
+            ..GuiSettings::default()
+        };
+        assert_eq!(settings.processing_chunk_ms(), 120);
+    }
 
     #[test]
     fn device_history_survives_restart_and_keeps_three_unique_selections() {

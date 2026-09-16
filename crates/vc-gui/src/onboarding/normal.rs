@@ -41,7 +41,7 @@ impl VcGui {
             && status.session_revision >= self.onboarding.normal.expected_revision
         {
             if let Some(applied) = self.onboarding.normal.requested.take() {
-                self.applied_chunk_ms = Some(applied.chunk_ms);
+                self.applied_chunk_ms = Some(applied.processing_chunk_ms());
                 self.onboarding.normal.applied = Some(applied);
             }
         }
@@ -95,7 +95,7 @@ impl VcGui {
             if ui
                 .add_enabled(
                     !busy && live_switchable,
-                    egui::Checkbox::new(&mut self.settings.passthrough, lang.text("Passthrough")),
+                    egui::Checkbox::new(&mut self.settings.passthrough, lang.text("Clean Voice")),
                 )
                 .changed()
             {
@@ -117,7 +117,7 @@ impl VcGui {
             );
         }
         if self.settings.passthrough {
-            ui.small(lang.text("Send input audio to the output without voice conversion."));
+            ui.small(lang.text("Your natural voice with the selected noise reduction. Turn off Clean Voice to use the selected voice model."));
         }
         if busy {
             ui.small(lang.text("Preparing or stopping. Stop requests are handled after the current preparation step."));
