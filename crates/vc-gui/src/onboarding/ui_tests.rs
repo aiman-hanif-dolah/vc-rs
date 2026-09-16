@@ -439,6 +439,8 @@ impl Fixture {
         ));
         Self {
             app: VcGui {
+                recordings: crate::recordings::RecordingControls::default(),
+                soundboard: crate::soundboard::SoundboardControls::default(),
                 // Start/Stop and downloads are injected. Device discovery still
                 // belongs to integration tests; do not click Refresh here.
                 controller: EngineController::new(settings.live()),

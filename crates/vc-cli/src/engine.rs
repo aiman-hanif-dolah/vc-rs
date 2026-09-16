@@ -40,7 +40,9 @@ pub fn run_realtime(args: RunArgs) -> Result<()> {
     let input_host = args.effective_input_host();
     let output_host = args.effective_output_host();
     let controller = EngineController::new(live);
+    controller.set_monitoring(args.monitor.is_some());
     controller.apply_config(RealtimeConfig {
+        monitor_device: args.monitor,
         model: args.model,
         embedder: args.embedder,
         embedder_output: args.embedder_output,
@@ -128,6 +130,14 @@ pub fn run_realtime(args: RunArgs) -> Result<()> {
                 metrics.output_dropped_samples,
                 metrics.output_buffer_samples,
             );
+            if metrics.monitor_played_samples > 0 || metrics.monitor_missing_samples > 0 {
+                info!(
+                    "monitor_consumed_samples={} monitor_missing_samples={} monitor_dropped_samples={}",
+                    metrics.monitor_played_samples,
+                    metrics.monitor_missing_samples,
+                    metrics.monitor_dropped_samples,
+                );
+            }
         }
     }
     controller.stop()?;

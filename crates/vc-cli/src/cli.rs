@@ -196,6 +196,9 @@ pub struct RunArgs {
     pub input: Option<String>,
     #[arg(long)]
     pub output: Option<String>,
+    /// Also monitor processed audio on this output device.
+    #[arg(long)]
+    pub monitor: Option<String>,
     #[arg(
         long,
         value_enum,

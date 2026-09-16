@@ -5,7 +5,17 @@
 //! to GUI rendering, model loading, or other blocking work.
 
 pub mod audio;
+mod playback;
 mod realtime;
+mod recording_library;
+mod soundboard;
+
+pub use soundboard::{soundboard_directory, Soundboard};
+
+pub use playback::{AudioFilePlayer, PlaybackSnapshot};
+pub use recording_library::{
+    recordings_directory, RecordingEntry, RecordingLibrary, RecordingLibrarySnapshot,
+};
 
 pub use realtime::{
     write_wav_mono, AudioHost, DenoiserMode, DeviceList, DeviceTestConfig, DeviceTestSnapshot,

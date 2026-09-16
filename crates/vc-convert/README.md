@@ -1,5 +1,15 @@
 # RVC conversion metadata
 
+For a local streaming conversion without opening the GUI:
+
+```powershell
+cargo run --release -p vc-convert --example convert -- path/to/voice.pth
+```
+
+The example uses the same converter as the GUI and refuses an existing ONNX
+output. It does not execute Python checkpoint code. Only use models whose terms
+permit your intended use; conversion does not change their licensing.
+
 Both export modes retain bounded descriptive PTH fields alongside the generated
 ONNX graph. The graph's validated configuration is authoritative; source metadata
 cannot override the sample rate, F0 contract, or streaming inputs.

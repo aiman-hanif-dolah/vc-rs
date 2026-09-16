@@ -21,6 +21,8 @@ use vc_core::validation::{
 };
 use vc_core::Provider;
 
+mod monitor;
+
 use crate::audio::{self, AudioStream, RealtimeAudio};
 
 const INPUT_QUEUE_CHUNKS: usize = 4;
@@ -116,6 +118,7 @@ pub struct RealtimeConfig {
     pub output_host: AudioHost,
     pub input_device: Option<String>,
     pub output_device: Option<String>,
+    pub monitor_device: Option<String>,
     pub wasapi_input_exclusive: bool,
     pub wasapi_output_exclusive: bool,
     pub wasapi_buffer_ms: u32,
@@ -153,6 +156,7 @@ impl Default for RealtimeConfig {
             output_host: AudioHost::default(),
             input_device: None,
             output_device: None,
+            monitor_device: None,
             wasapi_input_exclusive: false,
             wasapi_output_exclusive: false,
             wasapi_buffer_ms: 0,
@@ -369,6 +373,9 @@ pub struct DeviceList {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TelemetrySnapshot {
+    pub monitor_played_samples: u64,
+    pub monitor_missing_samples: u64,
+    pub monitor_dropped_samples: u64,
     pub chunks: u64,
     pub inference_us: u64,
     pub processing_us: u64,
@@ -389,6 +396,9 @@ pub struct TelemetrySnapshot {
 
 #[derive(Default)]
 struct Telemetry {
+    monitor_played_samples: AtomicU64,
+    monitor_missing_samples: AtomicU64,
+    monitor_dropped_samples: AtomicU64,
     chunks: AtomicU64,
     inference_us: AtomicU64,
     processing_us: AtomicU64,
@@ -407,6 +417,9 @@ struct Telemetry {
 
 impl Telemetry {
     fn reset(&self) {
+        self.monitor_played_samples.store(0, Ordering::Relaxed);
+        self.monitor_missing_samples.store(0, Ordering::Relaxed);
+        self.monitor_dropped_samples.store(0, Ordering::Relaxed);
         self.chunks.store(0, Ordering::Relaxed);
         self.inference_us.store(0, Ordering::Relaxed);
         self.processing_us.store(0, Ordering::Relaxed);
@@ -423,6 +436,9 @@ impl Telemetry {
 
     fn snapshot(&self) -> TelemetrySnapshot {
         TelemetrySnapshot {
+            monitor_played_samples: self.monitor_played_samples.load(Ordering::Relaxed),
+            monitor_missing_samples: self.monitor_missing_samples.load(Ordering::Relaxed),
+            monitor_dropped_samples: self.monitor_dropped_samples.load(Ordering::Relaxed),
             chunks: self.chunks.load(Ordering::Relaxed),
             inference_us: self.inference_us.load(Ordering::Relaxed),
             processing_us: self.processing_us.load(Ordering::Relaxed),
@@ -458,6 +474,7 @@ enum Command {
 }
 
 pub struct EngineController {
+    monitor_epoch: Arc<AtomicU64>,
     test_snapshot: Arc<Mutex<DeviceTestSnapshot>>,
     tx: SyncSender<Command>,
     status: Arc<Mutex<EngineStatusSnapshot>>,
@@ -476,6 +493,7 @@ impl EngineController {
         let telemetry = Arc::new(Telemetry::default());
         let live = Arc::new(AtomicLiveParams::new(initial_live));
         let passthrough = Arc::new(AtomicBool::new(false));
+        let monitor_epoch = Arc::new(AtomicU64::new(0));
         let test_snapshot = Arc::new(Mutex::new(DeviceTestSnapshot::default()));
         let control = {
             let status = Arc::clone(&status);
@@ -483,6 +501,7 @@ impl EngineController {
             let telemetry = Arc::clone(&telemetry);
             let live = Arc::clone(&live);
             let passthrough = Arc::clone(&passthrough);
+            let monitor_epoch = Arc::clone(&monitor_epoch);
             let test_snapshot = Arc::clone(&test_snapshot);
             thread::Builder::new()
                 .name("vc-app-control".to_string())
@@ -495,12 +514,14 @@ impl EngineController {
                         telemetry,
                         live,
                         passthrough,
+                        monitor_epoch,
                         test_snapshot,
                     )
                 })
                 .expect("failed to spawn vc-app control thread")
         };
         Self {
+            monitor_epoch,
             test_snapshot,
             tx,
             status,
@@ -545,6 +566,14 @@ impl EngineController {
         self.passthrough.store(enabled, Ordering::Relaxed);
     }
 
+    pub fn set_monitoring(&self, enabled: bool) {
+        let _ = self
+            .monitor_epoch
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                Some((epoch.wrapping_add(2) & !1) | u64::from(enabled))
+            });
+    }
+
     pub fn snapshot(&self) -> (EngineStatusSnapshot, TelemetrySnapshot, DeviceList) {
         let status = self.status.lock().map(|s| s.clone()).unwrap_or_default();
         let devices = self.devices.lock().map(|d| d.clone()).unwrap_or_default();
@@ -575,6 +604,7 @@ fn control_loop(
     telemetry: Arc<Telemetry>,
     live: Arc<AtomicLiveParams>,
     passthrough: Arc<AtomicBool>,
+    monitor_epoch: Arc<AtomicU64>,
     test_snapshot: Arc<Mutex<DeviceTestSnapshot>>,
 ) {
     let mut session: Option<RealtimeSession> = None;
@@ -610,6 +640,7 @@ fn control_loop(
                     Arc::clone(&telemetry),
                     Arc::clone(&live),
                     Arc::clone(&passthrough),
+                    Arc::clone(&monitor_epoch),
                     &status,
                 ) {
                     Ok(new_session) => {
@@ -651,9 +682,13 @@ fn control_loop(
             });
         }
         if let Some(session) = session.as_mut() {
-            for stream in [&mut session.input_stream, &mut session.output_stream]
-                .into_iter()
-                .flatten()
+            for stream in [
+                &mut session.input_stream,
+                &mut session.output_stream,
+                &mut session.monitor_stream,
+            ]
+            .into_iter()
+            .flatten()
             {
                 stream.report_errors();
             }
@@ -946,6 +981,20 @@ enum RuntimeModel {
 }
 
 impl RuntimeModel {
+    fn warm_up(&mut self, input_chunk: usize, sample_rate: u32) -> Result<()> {
+        if let Self::Switchable { rvc, .. } = self {
+            // Run the complete fixed-shape path before device callbacks start.
+            // Discard both model and joining history so preparation never leaks
+            // into the live stream, including sessions initially in passthrough.
+            let silence = vec![0.0; input_chunk];
+            let mut discarded = Vec::new();
+            rvc.process_chunk(&silence, sample_rate, &mut discarded)?;
+            rvc.model_mut().reset_streaming_state()?;
+            rvc.reset_streaming_state();
+        }
+        Ok(())
+    }
+
     fn process_chunk(
         &mut self,
         audio: &[f32],
@@ -1043,6 +1092,7 @@ fn accumulate_input_chunk(
 }
 
 struct RealtimeSession {
+    monitor_stream: Option<AudioStream>,
     running: Arc<AtomicBool>,
     // The error that stopped the inference worker, if any. The worker writes it
     // before clearing `running`; the controller surfaces it in the engine status
@@ -1067,6 +1117,7 @@ impl RealtimeSession {
         telemetry: Arc<Telemetry>,
         live: Arc<AtomicLiveParams>,
         passthrough_live: Arc<AtomicBool>,
+        monitor_epoch: Arc<AtomicU64>,
         status: &Arc<Mutex<EngineStatusSnapshot>>,
     ) -> Result<Self> {
         // Process-wide GPU scheduling priority (all backends). Applied here on
@@ -1112,7 +1163,7 @@ impl RealtimeSession {
             &current_live,
         )?;
         let passthrough_live_switchable = config.has_complete_model_set();
-        let model = if passthrough_live_switchable {
+        let mut model = if passthrough_live_switchable {
             let report_progress = |progress| {
                 set_status(
                     status,
@@ -1177,6 +1228,15 @@ impl RealtimeSession {
             RuntimeModel::PassthroughOnly(passthrough_processor)
         };
 
+        if passthrough_live_switchable {
+            set_status(
+                status,
+                EngineState::Starting,
+                "Preparing first voice conversion",
+            );
+            model.warm_up(input_chunk, input_rate)?;
+        }
+
         let output_capacity = output_chunk * OUTPUT_QUEUE_CHUNKS;
         let running = Arc::new(AtomicBool::new(true));
         let wake = Arc::new(WorkerWake::default());
@@ -1193,6 +1253,22 @@ impl RealtimeSession {
             &telemetry,
         )?;
         let last_error = Arc::new(Mutex::new(None));
+        let (monitor_stream, mut monitor_writer) = if let Some(device) = &config.monitor_device {
+            if device == audio.output_name() {
+                bail!("Monitor headphones must be different from the main output device");
+            }
+            let (stream, writer) = monitor::open(
+                config.output_host,
+                device,
+                output_rate,
+                output_chunk,
+                monitor_epoch,
+                Arc::clone(&telemetry),
+            )?;
+            (Some(stream), Some(writer))
+        } else {
+            (None, None)
+        };
         let worker_last_error = Arc::clone(&last_error);
         let worker_running = Arc::clone(&running);
         let worker_wake = Arc::clone(&wake);
@@ -1295,6 +1371,16 @@ impl RealtimeSession {
                             .output_peak_bits
                             .store(sample_peak(&prepared).to_bits(), Ordering::Relaxed);
                         let output_silent = stats.silent;
+                        if let Some(monitor) = monitor_writer.as_mut() {
+                            if let Err(err) = monitor.push(&prepared) {
+                                tracing::error!("monitor output stopped: {err:#}");
+                                if let Ok(mut slot) = worker_last_error.lock() {
+                                    *slot = Some(format!("Monitor output failed: {err:#}"));
+                                }
+                                worker_running.store(false, Ordering::SeqCst);
+                                break;
+                            }
+                        }
                         if capture_output {
                             if let Ok(mut samples) = worker_debug_output.lock() {
                                 samples.extend_from_slice(&prepared);
@@ -1319,7 +1405,13 @@ impl RealtimeSession {
                 })?,
         );
 
-        if let Err(err) = output_stream.play().and_then(|_| input_stream.play()) {
+        let playback = output_stream.play().and_then(|_| {
+            if let Some(stream) = &monitor_stream {
+                stream.play()?;
+            }
+            input_stream.play()
+        });
+        if let Err(err) = playback {
             drop(input_stream);
             drop(output_stream);
             stop_startup_worker(&running, &wake, &mut worker);
@@ -1327,6 +1419,7 @@ impl RealtimeSession {
         }
 
         Ok(Self {
+            monitor_stream,
             running,
             last_error,
             wake,
@@ -1377,6 +1470,7 @@ impl Drop for RealtimeSession {
         self.wake.wake();
         drop(self.input_stream.take());
         drop(self.output_stream.take());
+        drop(self.monitor_stream.take());
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -1507,6 +1601,39 @@ fn sample_peak(samples: &[f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn warm_up_leaves_model_free_audio_unchanged() {
+        let live = LiveParams::default();
+        let make_model = || {
+            RuntimeModel::PassthroughOnly(
+                PassthroughProcessor::new(
+                    DenoiserMode::Off,
+                    NoiseGateShaping::default(),
+                    48_000,
+                    48_000,
+                    None,
+                    #[cfg(feature = "gtcrn")]
+                    vc_core::denoise::GtcrnBackend::OrtCpu,
+                    &live,
+                )
+                .unwrap(),
+            )
+        };
+        let mut warmed = make_model();
+        let mut fresh = make_model();
+        warmed.warm_up(960, 48_000).unwrap();
+        let input = [0.125; 960];
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        warmed
+            .process_chunk(&input, 48_000, &live, true, &mut actual)
+            .unwrap();
+        fresh
+            .process_chunk(&input, 48_000, &live, true, &mut expected)
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+
     #[test]
     fn peak_meter_detects_short_overloads_and_resets() {
         let mut samples = [0.0; 100];

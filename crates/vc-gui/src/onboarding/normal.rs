@@ -204,6 +204,8 @@ impl VcGui {
                 egui::CollapsingHeader::new(lang.text("Audio"))
                     .id_salt("audio-settings")
                     .show(ui, |ui| {
+                        self.monitor_ui(ui, status, devices);
+                        ui.separator();
                         self.connection_settings_ui(ui, status, devices);
                         ui.separator();
                         details::audio_details_ui(ui, lang, status);
@@ -226,10 +228,60 @@ impl VcGui {
                     });
                 ui.separator();
                 self.language_picker(ui);
+                ui.separator();
+                self.recordings_ui(ui);
+                ui.separator();
+                self.soundboard_ui(ui, status);
                 if ui.button(lang.text(text::SETUP)).clicked() {
                     self.reopen_tutorial();
                 }
             });
+    }
+
+    fn monitor_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        status: &EngineStatusSnapshot,
+        devices: &DeviceList,
+    ) {
+        let previous = self.settings.monitor_device.clone();
+        egui::ComboBox::from_label("Monitor headphones")
+            .selected_text(if previous.is_empty() {
+                "Not selected"
+            } else {
+                &previous
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.settings.monitor_device,
+                    String::new(),
+                    "Not selected",
+                );
+                for device in &devices.outputs {
+                    ui.selectable_value(&mut self.settings.monitor_device, device.clone(), device);
+                }
+            });
+        if previous != self.settings.monitor_device {
+            self.settings.monitor_enabled = false;
+            self.controller.set_monitoring(false);
+            self.changed();
+        }
+        let applied = self.onboarding.normal.applied.as_ref();
+        let ready = status.state == EngineState::Running
+            && !self.settings.monitor_device.is_empty()
+            && applied
+                .is_some_and(|settings| settings.monitor_device == self.settings.monitor_device);
+        if ui
+            .add_enabled(
+                ready,
+                egui::Checkbox::new(&mut self.settings.monitor_enabled, "Hear myself"),
+            )
+            .changed()
+        {
+            self.controller
+                .set_monitoring(self.settings.monitor_enabled);
+        }
+        ui.small("Select headphones, then Start or Restart. Hear myself toggles processed audio without restarting; the main output stays active.");
     }
 
     fn channel_ui(
@@ -708,6 +760,23 @@ impl VcGui {
                 metric(ui, lang.text("Inference"), format!("{inference_ms} ms"));
             }
             metric(ui, lang.text("Input overruns"), telemetry.input_overruns);
+            if !self.settings.monitor_device.is_empty() {
+                metric(
+                    ui,
+                    "Monitor samples consumed",
+                    telemetry.monitor_played_samples,
+                );
+                metric(
+                    ui,
+                    "Monitor missing samples",
+                    telemetry.monitor_missing_samples,
+                );
+                metric(
+                    ui,
+                    "Monitor dropped samples",
+                    telemetry.monitor_dropped_samples,
+                );
+            }
             metric(
                 ui,
                 lang.text("Output underruns"),

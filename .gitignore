@@ -7,6 +7,7 @@
 /crates/vc-vst3/dist/licenses/THIRD-PARTY-LICENSES.md
 
 *.wav
+!resources/soundboard/*.wav
 *.engine
 *.dll
 *.lib

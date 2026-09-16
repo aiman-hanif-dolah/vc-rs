@@ -20,6 +20,8 @@ use vc_core::Provider;
 
 mod model_setup;
 mod onboarding;
+mod recordings;
+mod soundboard;
 mod ui_text;
 
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -161,6 +163,9 @@ struct GuiSettings {
     output_host: String,
     input_device: String,
     output_device: String,
+    monitor_device: String,
+    #[serde(skip)]
+    monitor_enabled: bool,
     recent_input_devices: Vec<String>,
     recent_output_devices: Vec<String>,
     wasapi_input_exclusive: bool,
@@ -220,6 +225,8 @@ impl Default for GuiSettings {
             output_host: default_host_token().to_string(),
             input_device: String::new(),
             output_device: String::new(),
+            monitor_device: String::new(),
+            monitor_enabled: false,
             recent_input_devices: Vec::new(),
             recent_output_devices: Vec::new(),
             wasapi_input_exclusive: false,
@@ -326,6 +333,7 @@ impl GuiSettings {
             ));
         }
         Ok(RealtimeConfig {
+            monitor_device: string_option(&self.monitor_device),
             model: path_option(&self.model),
             embedder: path_option(&self.embedder),
             embedder_output: None,
@@ -389,6 +397,8 @@ impl GuiSettings {
 }
 
 struct VcGui {
+    soundboard: soundboard::SoundboardControls,
+    recordings: recordings::RecordingControls,
     controller: EngineController,
     settings: GuiSettings,
     dirty_since: Option<Instant>,
@@ -524,6 +534,8 @@ impl VcGui {
         let _ = controller.refresh_devices(settings.input_host(), settings.output_host());
         Self {
             controller,
+            recordings: recordings::RecordingControls::default(),
+            soundboard: soundboard::SoundboardControls::default(),
             settings,
             dirty_since: discovered.then(Instant::now),
             ui_error,
