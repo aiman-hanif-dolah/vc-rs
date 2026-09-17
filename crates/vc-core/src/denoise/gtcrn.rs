@@ -315,6 +315,12 @@ impl GtcrnDenoiser {
         self.inner.process_in_place(samples)
     }
 
+    /// Reset history, denoise finite input, remove delay, and preserve its length.
+    pub fn process_finite(&mut self, samples: &[f32]) -> Result<Vec<f32>> {
+        self.inner.reset()?;
+        self.inner.process_finite(samples)
+    }
+
     /// Restore the post-construction (warmed-up) state, including model caches.
     pub fn reset(&mut self) -> Result<()> {
         self.inner.reset()

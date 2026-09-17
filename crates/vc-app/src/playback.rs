@@ -143,6 +143,16 @@ fn run(
                 state.lock().unwrap().playing = false;
                 continue;
             }
+            if session.stream.has_error() {
+                drop(playback.take());
+                let mut current = state.lock().unwrap();
+                current.playing = false;
+                current.loading = false;
+                current.error = Some(
+                    "Playback device failed. Reconnect or select an output and play again.".into(),
+                );
+                continue;
+            }
             session.stream.report_errors();
             if session.position.load(Ordering::Relaxed) >= session.frames {
                 let finished = session.finished_at.get_or_insert_with(Instant::now);

@@ -18,6 +18,7 @@ use vc_core::gpu::GpuDevice;
 use vc_core::validation::CONVERSION_TIMING_LIMITS;
 use vc_core::Provider;
 
+mod lifecycle;
 mod model_setup;
 mod onboarding;
 mod recordings;
@@ -35,6 +36,16 @@ fn main() -> eframe::Result {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
+    let lock_path = settings_path()
+        .map_err(|error| eframe::Error::AppCreation(std::io::Error::other(error).into()))?
+        .with_file_name("gui.instance.lock");
+    let Some(_instance) = lifecycle::acquire_instance(&lock_path)
+        .map_err(|error| eframe::Error::AppCreation(error.into()))?
+    else {
+        lifecycle::activate_instance(&lock_path);
+        return Ok(());
+    };
+    let start_audio = std::env::args_os().any(|argument| argument == "--start");
     eframe::run_native(
         "Sooara",
         eframe::NativeOptions {
@@ -43,7 +54,7 @@ fn main() -> eframe::Result {
                 .with_min_inner_size([520.0, 440.0]),
             ..Default::default()
         },
-        Box::new(|cc| {
+        Box::new(move |cc| {
             install_system_japanese_font(&cc.egui_ctx);
             let mut style = (*cc.egui_ctx.global_style()).clone();
             style.spacing.item_spacing = egui::vec2(10.0, 10.0);
@@ -55,7 +66,11 @@ fn main() -> eframe::Result {
                 .text_styles
                 .insert(egui::TextStyle::Button, egui::FontId::proportional(16.0));
             cc.egui_ctx.set_global_style(style);
-            Ok(Box::new(VcGui::new()))
+            let mut app = VcGui::new();
+            if start_audio {
+                app.start_saved_configuration();
+            }
+            Ok(Box::new(app))
         }),
     )
 }
@@ -500,6 +515,23 @@ struct GpuDeviceDiscovery {
 }
 
 impl VcGui {
+    fn start_saved_configuration(&mut self) {
+        if self.ui_error.is_some() {
+            return;
+        }
+        if self.onboarding.active()
+            || self.settings.input_device.is_empty()
+            || self.settings.output_device.is_empty()
+        {
+            self.ui_error = Some(
+                "Automatic start paused: finish setup and select explicit input and output devices, then press Start."
+                    .into(),
+            );
+            return;
+        }
+        self.apply_or_start();
+    }
+
     fn language_picker(&mut self, ui: &mut egui::Ui) {
         let previous = self.settings.language;
         egui::ComboBox::new("language-picker", "Language / 言語")

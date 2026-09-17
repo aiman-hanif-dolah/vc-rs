@@ -38,6 +38,157 @@ Weights remain ignored local assets. Conversion used the shared Rust converter.
 
 ## Next acceptance work
 
+### Reuse GTCRN on return to Clean Voice (2026-09-17)
+
+The passthrough reset path was reconstructing the GTCRN ONNX session whenever
+switching back from RVC. It now resets the loaded denoiser's caches/adapter and
+reuses its session, matching the existing RVC reset behavior. Initial load still
+validates and loads the model normally. Resampling history is reset in both cases.
+This removes model disk/session work from a live mode change, but does not remove
+the different route latencies or prove a seamless transition.
+
+GUI/CLI release builds and installed doctor passed. Added an explicitly ignored
+CPU-ORT regression test that initializes GTCRN, clears the processor's model-path
+setting, then resets and processes again. The test was not run. Updated files are
+installed for next launch; the already-running process still needs a relaunch
+and a before/after transition check.
+
+### Live GTCRN selection (2026-09-17)
+
+Selected GTCRN through the installed GUI, applied it with Restart, and verified
+the persisted local setting. The app reached Running with the existing physical
+microphone, virtual-cable output, and separate monitor headphones. Monitoring
+was enabled through Hear myself. In Clean Voice, displayed processing was about
+7–8 ms per 100 ms chunk; input overruns and monitor drops were zero in the observed
+snapshot. Monitor callback-consumed samples increased.
+
+Turning off Clean Voice activated neural conversion without restarting the GUI.
+Processing then displayed 71.3 ms per 100 ms chunk and nominal content delay
+187.81 ms, excluding device/queue latency. Main output underruns rose from 14
+to 20 and monitor missing samples from 2880 to 5760 around the switch. This
+does not pass seamless-switch acceptance. No input overruns or monitor drops
+appeared in that snapshot. Restored Clean Voice, retaining GTCRN and monitoring
+for this session. Monitoring remains deliberately muted after a future launch.
+This verifies live paths and saved selection, not audible quality or Discord.
+
+### Reopening the running app (2026-09-17)
+
+The instance-lock owner now writes a per-user PID sidecar. A duplicate launch
+enumerates only that process's Sooara window and asks Windows to show/restore
+and foreground it, then exits without creating another engine. A retained PID
+file alone never establishes that an instance is running: activation is attempted
+only after the OS file lock reports contention. Windows may restrict foreground
+focus; this does not bypass OS focus rules.
+
+The updated release built and was installed. Its startup command reached Running.
+After minimizing the window, a second installed process exited with code 0 and
+the original window was restored without a separate automation activation call;
+the original process remained responsive and displayed Running. The running build
+also now includes the earlier device-failure visibility changes. Lock regression
+tests remain unexecuted. Tray behavior, automatic device recovery, perceptual
+voice quality, and Discord reception are still not completed.
+
+### Recorded-microphone denoiser comparison (2026-09-17)
+
+Added `vc-app`'s `denoise_recording` example for local mono PCM16 recordings.
+It uses the existing shared finite RNNoise adapter and exposes the same finite
+adapter path for GTCRN, preserving frame count and removing reported streaming
+delay. It refuses existing output files and does not alter input recordings.
+Build with `--no-default-features --features windowsml,rnnoise,gtcrn`; development
+examples need `VC_RS_WINDOWSML_BOOTSTRAP_DLL` pointing to the built bootstrap DLL.
+
+Both algorithms processed the preserved 20.64-second dry take into 990720 samples
+at 48 kHz. Using 100 ms windows selected by the original input's energy, the
+quietest 20 percent had mean energy reduced by 9.41 dB with RNNoise and 11.47 dB
+with GTCRN. The loudest 20 percent changed by -0.097 and -0.092 dB respectively.
+These are energy-selected windows, not manually labelled speech/noise, so they
+do not establish intelligibility or noise-only attenuation. Local processing
+including initialization took 79 ms (RNNoise) and 1375 ms (GTCRN); these are
+offline throughput figures, not microphone-to-headphone latency.
+
+A second diagnostic added FFmpeg pink noise (48 kHz, amplitude 0.02, seed 7341,
+20.64 s) without normalization. Relative to the original take after a common
+7 kHz low-pass filter, reference SNR was 14.68 dB for the mixture, 13.01 dB after
+RNNoise, and 16.60 dB after GTCRN. No clipped samples were found. The original
+take itself contains noise, and this single synthetic-noise condition is not a
+clean-reference benchmark, perceptual evaluation, or Krisp comparison. GTCRN's
+16 kHz internal rate also limits bandwidth. Results favor trying GTCRN for this
+recording but do not establish a universal default. Comparison WAVs remain local
+and ignored under `assets/sooara-denoise-*-20260917.wav`. Tests were not run.
+
+### Device failure visibility (2026-09-17)
+
+Inspection found that live sessions only logged stream errors, leaving the GUI
+able to report Running after a device failed. File playback could likewise stay
+Playing when its callback stopped. Both paths now inspect stream failure and
+stop the affected session with an actionable reconnect/restart message. The
+control thread identifies microphone, main-output, or monitor failure; callbacks
+still only update atomics. CPAL non-xrun failure state is latched until the stream
+is replaced so diagnostic counter draining cannot erase a failure. Ordinary
+xruns remain nonfatal, matching the existing device-test distinction.
+
+GUI and CLI release builds passed. The failure-latch regression test was added
+but not executed. Physical disconnection/reconnection has not been verified,
+and automatic reconnection remains unfinished. The update was installed side by
+side; the previously running instance is not hot-patched by installation.
+
+### Automatic saved-session startup (2026-09-17)
+
+The GUI now accepts `--start`. It uses the existing engine start path with the
+saved configuration, only when settings loaded without error, setup/terms do not
+need attention, and explicit input/output devices are selected. Otherwise the
+window remains available with an explanation. Monitoring still starts muted.
+Missing devices or models surface through normal engine validation; automatic
+retry/device recovery is not implemented yet.
+
+A per-user OS-held file lock prevents a second new GUI instance from starting
+another engine. The lock releases on process exit; the file may remain without
+blocking the next launch. It does not coordinate with older builds or the CLI.
+Duplicate launches currently exit without bringing the existing window forward.
+
+The local installer accepts `-StartAudioAtLogin` to set `--start` on its per-user
+Startup shortcut. Explicit `-StartAudioAtLogin:$false` restores launch-only mode;
+omitting it preserves the existing preference across updates. The setting is
+enabled on this PC. A launch using the installed shortcut's target and arguments
+reached Running in the actual GUI without a Start click. A second `--start`
+process exited with code 0, leaving the original process responsive. This verifies
+the launch command, not a full Windows login/reboot cycle or acoustic quality.
+
+The release build and installed doctor passed. A lock exclusion/release unit
+test was added but not executed, per the user's testing instruction. Background
+tray operation, foreground activation, crash recovery, and device reconnect
+remain unfinished.
+
+### Installed GUI and login availability (2026-09-17)
+
+The native computer-use runtime became available. First-run setup was completed
+in the installed window using enumerated PD200X input, the existing virtual cable
+as main output, and Realtek headphones as independent monitor. The cached local
+candidate voice and support models were selected; settings persisted across
+closing and reopening the app. No personal device names were added to source.
+
+The GUI reached Running. Clean Voice and Hear myself toggles responded without
+restarting the engine. Neural conversion at the saved 100 ms chunk setting showed
+approximately 60–62 ms processing and zero input overruns. Output underruns rose
+from 20 to 21 across observations, so this is not a dropout-free acceptance pass.
+Nominal content delay was 169.81 ms, not measured end-to-end latency. Naturalness,
+noise suppression quality, and Discord remote reception remain unverified.
+
+An existing recording played inside the app and Stop returned playback to idle
+while the engine remained Running, without opening an external media player.
+Visual inspection found long sound names overflowing the grid. Tiles now have
+bounded equal widths and wrapped labels; the rebuilt installed window displayed
+eight columns at its normal width and ten when maximized. Recording row heights
+now account for button text and padding. A soundboard click was exercised without
+an error; acoustic playback was not assessed in this GUI check.
+
+The installer now accepts `-LaunchAtLogin` and preserves an existing login launch
+on subsequent installs. Both Start menu and per-user Startup shortcuts were
+verified to point to the installed, hash-checked preview. It opens the app only;
+audio processing still requires Start. Actual login/reboot behavior has not been
+tested, and continuous background operation/recovery remains unfinished.
+The release build and installed runtime diagnostic passed; tests were not run.
+
 ### Bundled one-shot soundboard (2026-09-17)
 
 Ten recorded Kenney Fighter voiceover clips are included under

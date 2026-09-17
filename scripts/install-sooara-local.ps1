@@ -3,7 +3,10 @@
     Install a local Windows ML build side by side without replacing old Sooara.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
-param()
+param(
+    [switch]$LaunchAtLogin,
+    [switch]$StartAudioAtLogin
+)
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -44,11 +47,27 @@ Copy-Item -LiteralPath $soundboardRoot -Destination (Join-Path $destination 'sou
 if ($LASTEXITCODE -ne 0) { throw 'Installed runtime diagnostic failed; shortcut was not changed.' }
 $startMenu = [Environment]::GetFolderPath('Programs')
 if (-not $startMenu) { throw 'Cannot locate the per-user Start menu.' }
+$startup = [Environment]::GetFolderPath('Startup')
+if (-not $startup) { throw 'Cannot locate the per-user Startup folder.' }
+$startupShortcut = Join-Path $startup 'Sooara Next.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut((Join-Path $startMenu 'Sooara Next.lnk'))
 $shortcut.TargetPath = Join-Path $destination 'vc-gui.exe'
 $shortcut.WorkingDirectory = $destination
 $shortcut.Description = 'Sooara local preview - noise reduction and voice conversion'
 $shortcut.Save()
+if ($LaunchAtLogin -or $StartAudioAtLogin -or (Test-Path -LiteralPath $startupShortcut)) {
+    if ($PSCmdlet.ShouldProcess($startupShortcut, 'Configure Sooara login launch and saved audio startup preference')) {
+        $loginShortcut = $shell.CreateShortcut($startupShortcut)
+        $loginShortcut.TargetPath = $shortcut.TargetPath
+        $loginShortcut.WorkingDirectory = $destination
+        if ($PSBoundParameters.ContainsKey('StartAudioAtLogin')) {
+            $loginShortcut.Arguments = $(if ($StartAudioAtLogin) { '--start' } else { '' })
+        }
+        $loginShortcut.Description = 'Open Sooara at login with the selected audio startup preference'
+        $loginShortcut.Save()
+        Write-Host "Sooara login launch configured. Arguments: $($loginShortcut.Arguments)"
+    }
+}
 Write-Host "Installed local preview: $destination"
 Write-Host 'Old Sooara, recordings, model files, and audio drivers were not changed.'

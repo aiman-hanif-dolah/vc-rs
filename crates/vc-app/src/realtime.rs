@@ -681,6 +681,28 @@ fn control_loop(
                 "Audio device disconnected or test worker stopped. Retry the device test.".into()
             });
         }
+        let failed_stream = session.as_ref().and_then(|session| {
+            [
+                ("microphone", &session.input_stream),
+                ("main output", &session.output_stream),
+                ("monitor headphones", &session.monitor_stream),
+            ]
+            .into_iter()
+            .find_map(|(name, stream)| {
+                stream
+                    .as_ref()
+                    .is_some_and(AudioStream::has_error)
+                    .then_some(name)
+            })
+        });
+        if let Some(name) = failed_stream {
+            drop(session.take());
+            set_error_message(
+                &status,
+                format!("Audio device failed: {name}. Reconnect the device and press Start."),
+                None,
+            );
+        }
         if let Some(session) = session.as_mut() {
             for stream in [
                 &mut session.input_stream,
@@ -857,6 +879,14 @@ impl PassthroughProcessor {
     fn reset(&mut self, live: &LiveParams) -> Result<()> {
         self.resampler =
             dsp::StreamingResampleMono::new(self.input_rate as usize, self.output_rate as usize)?;
+        #[cfg(feature = "gtcrn")]
+        if let (DenoiserMode::Gtcrn, PassthroughDenoiser::Gtcrn(denoiser)) =
+            (self.mode, &mut self.denoiser)
+        {
+            // A mode switch needs fresh caches, not disk I/O and a new ONNX session.
+            denoiser.reset()?;
+            return Ok(());
+        }
         self.denoiser = match self.mode {
             DenoiserMode::Rnnoise => {
                 #[cfg(feature = "rnnoise")]
@@ -1890,6 +1920,37 @@ mod tests {
         assert!(should_queue_silent_output(0, 1_000));
         assert!(should_queue_silent_output(1_000, 1_000));
         assert!(!should_queue_silent_output(1_001, 1_000));
+    }
+
+    #[cfg(all(feature = "gtcrn", feature = "cpu"))]
+    #[test]
+    #[ignore = "requires VC_RS_GTCRN_MODEL and a CPU ORT runtime"]
+    fn passthrough_reset_reuses_loaded_gtcrn_without_model_path() {
+        let model_dir = std::env::var_os("VC_RS_GTCRN_MODEL")
+            .map(PathBuf::from)
+            .expect("set VC_RS_GTCRN_MODEL to the local model directory");
+        let live = LiveParams::default();
+        let mut processor = PassthroughProcessor::new(
+            DenoiserMode::Gtcrn,
+            NoiseGateShaping::default(),
+            48_000,
+            48_000,
+            Some(model_dir),
+            vc_core::denoise::GtcrnBackend::OrtCpu,
+            &live,
+        )
+        .unwrap();
+        let mut prepared = Vec::new();
+        processor
+            .process_chunk(&[0.01; 960], &live, &mut prepared)
+            .unwrap();
+        processor.gtcrn_model_dir = None;
+        processor.reset(&live).unwrap();
+        processor
+            .process_chunk(&[0.0; 960], &live, &mut prepared)
+            .unwrap();
+        assert_eq!(prepared.len(), 960);
+        assert!(prepared.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]

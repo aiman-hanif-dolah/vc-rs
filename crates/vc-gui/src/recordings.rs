@@ -59,10 +59,12 @@ impl VcGui {
                 ui.label("No recordings found. You can choose a WAV file below.");
             }
             let mut play = None;
+            let row_height = ui.text_style_height(&egui::TextStyle::Button)
+                + 2.0 * ui.spacing().button_padding.y;
             egui::ScrollArea::vertical()
                 .id_salt("recording-library")
                 .max_height(200.0)
-                .show_rows(ui, 26.0, state.entries.len(), |ui, rows| {
+                .show_rows(ui, row_height, state.entries.len(), |ui, rows| {
                     for index in rows {
                         let entry = &state.entries[index];
                         ui.horizontal(|ui| {

@@ -4405,6 +4405,7 @@ dependencies = [
  "vc-convert",
  "vc-core",
  "wgpu",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

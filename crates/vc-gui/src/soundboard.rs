@@ -41,10 +41,13 @@ impl VcGui {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             }
             let columns = ((ui.available_width() / 100.0).floor() as usize).clamp(1, 10);
+            let tile_width = (ui.available_width() - 6.0 * (columns - 1) as f32) / columns as f32;
             let ready =
                 status.state == EngineState::Running || !self.settings.output_device.is_empty();
             egui::Grid::new("soundboard-grid")
                 .num_columns(columns)
+                .min_col_width(tile_width)
+                .max_col_width(tile_width)
                 .spacing([6.0, 6.0])
                 .show(ui, |ui| {
                     for (index, entry) in library.entries.iter().enumerate() {
@@ -59,8 +62,9 @@ impl VcGui {
                             .add_enabled(
                                 ready,
                                 egui::Button::new(label)
+                                    .wrap()
                                     .selected(playing)
-                                    .min_size(egui::vec2(88.0, 40.0)),
+                                    .min_size(egui::vec2(tile_width, 56.0)),
                             )
                             .clicked()
                         {

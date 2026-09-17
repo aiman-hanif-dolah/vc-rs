@@ -50,6 +50,10 @@ wasapi = "0.23"
 approx = "0.5"
 divan = "0.1"
 
+[[example]]
+name = "denoise_recording"
+required-features = ["rnnoise", "gtcrn"]
+
 [[bench]]
 name = "realtime_worker"
 harness = false

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
@@ -306,13 +306,11 @@ pub enum AudioStream {
 }
 
 impl AudioStream {
-    /// Test sessions stop output on device errors; inspect before report_errors
-    /// consumes CPAL counters. This runs on the control thread only.
+    /// Failures stay latched across diagnostic reporting until the stream is replaced.
+    /// This runs on the control thread only.
     pub(crate) fn has_error(&self) -> bool {
         match self {
-            Self::Cpal(stream) => stream.errors.counts.iter().enumerate().any(|(i, count)| {
-                ERROR_KINDS[i] != cpal::ErrorKind::Xrun && count.load(Ordering::Relaxed) > 0
-            }),
+            Self::Cpal(stream) => stream.errors.failed.load(Ordering::Relaxed),
             #[cfg(windows)]
             Self::Wasapi(stream) => stream.has_finished(),
         }
@@ -428,6 +426,7 @@ const ERROR_KINDS: [cpal::ErrorKind; 14] = [
 #[derive(Default)]
 struct StreamErrors {
     counts: [AtomicUsize; ERROR_KINDS.len()],
+    failed: AtomicBool,
 }
 
 impl StreamErrors {
@@ -436,6 +435,9 @@ impl StreamErrors {
     // counts instead of owned backend text, so repeated errors cannot grow a
     // queue. Relaxed suffices: these counters publish no other shared data.
     fn record(&self, kind: cpal::ErrorKind) {
+        if kind != cpal::ErrorKind::Xrun {
+            self.failed.store(true, Ordering::Relaxed);
+        }
         let index = ERROR_KINDS
             .iter()
             .position(|candidate| *candidate == kind)
@@ -901,6 +903,17 @@ where
 #[cfg(test)]
 mod error_tests {
     use super::*;
+
+    #[test]
+    fn device_failure_survives_reporting_but_xruns_are_nonfatal() {
+        let errors = StreamErrors::default();
+        errors.record(cpal::ErrorKind::Xrun);
+        errors.report("test");
+        assert!(!errors.failed.load(Ordering::Relaxed));
+        errors.record(cpal::ErrorKind::DeviceNotAvailable);
+        errors.report("test");
+        assert!(errors.failed.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn concurrent_error_reporting_preserves_counts() {

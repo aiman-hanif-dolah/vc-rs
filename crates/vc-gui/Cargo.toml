@@ -44,5 +44,8 @@ ureq = { version = "3.4", default-features = false, features = ["native-tls"] }
 sha2 = "0.10"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 egui_kittest = "0.34.3"
