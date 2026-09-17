@@ -2,6 +2,41 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::path::Path;
 
+#[derive(Default)]
+pub(crate) struct CloseGuard {
+    pending: bool,
+    confirmed: bool,
+}
+
+impl CloseGuard {
+    pub(crate) fn request(&mut self, state: vc_app::EngineState) -> bool {
+        if self.confirmed {
+            return false;
+        }
+        self.pending = matches!(
+            state,
+            vc_app::EngineState::Starting
+                | vc_app::EngineState::Running
+                | vc_app::EngineState::Stopping
+        );
+        self.pending
+    }
+
+    pub(crate) fn pending(&self) -> bool {
+        self.pending
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        self.pending = false;
+        self.confirmed = false;
+    }
+
+    pub(crate) fn confirm(&mut self) {
+        self.pending = false;
+        self.confirmed = true;
+    }
+}
+
 pub(crate) fn acquire_instance(path: &Path) -> io::Result<Option<File>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -79,6 +114,35 @@ unsafe extern "system" fn activate_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_audio_requires_explicit_exit_confirmation() {
+        for state in [
+            vc_app::EngineState::Starting,
+            vc_app::EngineState::Running,
+            vc_app::EngineState::Stopping,
+        ] {
+            let mut guard = CloseGuard::default();
+            assert!(guard.request(state));
+            assert!(guard.pending());
+            guard.cancel();
+            assert!(!guard.pending());
+            assert!(guard.request(state));
+            guard.confirm();
+            assert!(!guard.request(state));
+            guard.cancel();
+            assert!(guard.request(state));
+        }
+    }
+
+    #[test]
+    fn inactive_audio_does_not_block_exit() {
+        for state in [vc_app::EngineState::Stopped, vc_app::EngineState::Error] {
+            let mut guard = CloseGuard::default();
+            assert!(!guard.request(state));
+            assert!(!guard.pending());
+        }
+    }
 
     #[test]
     fn instance_lock_excludes_duplicates_and_releases_on_drop() {

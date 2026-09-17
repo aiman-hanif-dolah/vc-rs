@@ -38,6 +38,146 @@ Weights remain ignored local assets. Conversion used the shared Rust converter.
 
 ## Next acceptance work
 
+### Nonblocking model selection (2026-09-18)
+
+The RVC/ContentVec/RMVPE chooser no longer calls the native file dialog on the
+GUI thread. A named worker owns the dialog and returns its result over a channel;
+the GUI polls without waiting and applies the existing ONNX/PTH selection flow.
+Only one model dialog can be pending. Cancellation leaves the selected model
+unchanged; unexpected worker disconnection becomes an actionable UI error.
+This follows the existing recording-picker worker pattern, with picker state
+kept in a separate module rather than the widget renderer.
+
+Release build, installed doctor, and `cargo check -p vc-gui --tests` with the
+Windows ML/RNNoise/GTCRN feature set passed. This compiles but does not execute
+tests. In an isolated profile, the native model dialog remained open while the
+main GUI repainted and successfully handled Stop. Cancelling re-enabled the
+chooser without selecting a file; reopening and choosing the existing ONNX
+updated its displayed filename while the engine remained Stopped. The
+computer-use skill verified these interactions. No audio was started in that
+profile, and the user's active session was not restarted. The new build is
+installed for next launch. PTH conversion after asynchronous selection and
+all platform-specific native dialog behaviors are not yet runtime-verified.
+
+### Matched SOLA / PSOLA recorded-voice comparison (2026-09-18)
+
+Converted the preserved 20.64-second dry take through the shared WAV pipeline,
+using the local LJ RVC v2 model, ContentVec, RMVPE, GTCRN, Windows ML CPU,
+100 ms chunks, 100 ms extra context, 85 ms requested crossfade, 12 ms search,
+10 ms tail discard, unity gains, and zero pitch shift. Only smoothing mode
+changed. This is an offline CPU comparison, not the live GPU's latency result.
+
+Both outputs contain 990720 mono PCM16 samples at 48 kHz and no clipped samples.
+SOLA peak/RMS were -9.992/-34.749 dBFS; PSOLA -9.988/-34.767 dBFS. Across 206
+reported joins, SOLA median/p95/max boundary-step ratios were 0.930/3.497/7.299;
+PSOLA 0.942/3.748/7.790. Mean overlap correlation was 0.5341 versus 0.5223.
+Mean absolute short-window energy change was 3.074 versus 2.895 dB; PSOLA fell
+back on 68 joins. Ratios compare boundary steps to nearby waveform differences,
+not human quality scores. Mixed results do not justify changing the live SOLA
+setting, and neither smoothness metric establishes naturalness/intelligibility.
+
+Comparison WAVs and CSVs are ignored local assets named
+`assets/sooara-gtcrn-{sola,psola}-20260918.*`; originals and live settings were
+not changed. Conversion commands completed successfully; automated tests were
+not run. Fresh model information in the running GUI also read 105.1 MiB,
+40000 Hz, v2 successfully, so the earlier cached file-not-found display did not
+reproduce. No metadata-reader change was made on that evidence.
+
+### Discord routing corrected while muted (2026-09-17)
+
+Current UI inspection found Discord connected with the user's microphone muted.
+Its selected input was still the physical microphone, bypassing Sooara. Through
+the computer-use skill, selected the capture side of the existing virtual cable
+and changed the Input Profile from Voice Isolation to Studio (shown by Discord
+as no processing), avoiding a second isolation stage after Sooara's GTCRN.
+Headphone output was unchanged. Returned to the call and verified the mute
+indicator remained enabled. No Mic Test, soundboard injection, unmute, message,
+or call join/leave action was performed.
+
+Inspection of Sooara then found Stopped, not Running: a responsive process was
+not sufficient evidence of an active audio session. Closed that stopped older
+build and launched the latest installed GUI with `--start`. It reached Running
+in Clean Voice with the saved physical microphone and virtual-cable output.
+This launch also activates the recent recovery/startup-wait changes.
+
+A short FFmpeg capture of the virtual-cable capture endpoint was sent only to
+the null sink, with no audio file retained. It received stereo 44.1 kHz PCM,
+peak -63.46 dBFS and overall RMS -87.24 dBFS in this quiet observation. Nonzero
+low-level samples establish an active endpoint, not intelligible speech,
+speaker identity, denoising quality, or remote Discord reception. Gain was not
+changed on that basis. Discord remains muted for the user to control; remote
+listening and natural converted voice quality are still outstanding.
+
+### Wait for unavailable devices at startup (2026-09-17)
+
+Recovery-enabled startup now checks the selected endpoints before opening the
+session. Missing/ambiguous devices or an enumeration failure enter the same
+cancellable three-second polling flow as a disconnected session. Models are not
+loaded repeatedly while devices are absent. Explicit Stop cancels the pending
+start; a later Start is a new request. Normal CLI behavior remains unchanged.
+If endpoints are initially available, their resolved names are checked again
+before streams start. Non-device model/runtime errors still surface as errors.
+
+GUI/CLI release builds and installed doctor passed. In an isolated APPDATA profile
+with deliberately nonexistent input/output names, the installed GUI displayed
+Starting / Waiting for the selected audio devices. Stop changed it to Stopped,
+and a subsequent observation remained Stopped. The real profile's SHA-256 was
+unchanged, and its running process was not restarted. No audio was captured or
+sent by the isolated profile. The computer-use skill was used to verify the
+waiting and cancellation UI. Added polling/enumeration regression tests were
+not executed. Actual device appearance and subsequent live audio remain to be
+verified; this check does not establish successful physical reconnection.
+
+### Device recovery and explicit-route safety (2026-09-17)
+
+The GUI opts into shared-runtime device recovery. A stream failure from a
+previously running session preserves its configuration and latest passthrough
+choice, releases the failed session, and polls selected endpoints every three
+seconds on the control thread. It waits for unambiguous exact names, including
+the monitor when configured, then reuses the normal session startup path.
+Recovered input/output names are checked again before streams start. Stop,
+replacement configuration, device diagnostics, or disabling recovery cancels
+the pending recovery. Failed reopen attempts are capped at three. Missing
+endpoints remain in a cancellable waiting state without repeatedly loading models.
+CLI recovery remains off unless explicitly enabled through the controller API.
+
+Explicit CPAL device selections no longer fall back to the system default when
+not found. Exact names take priority over partial-name CLI matching. Output
+diagnostics/monitoring additionally verify the resolved endpoint before starting
+its stream, closing a disconnect-between-enumeration-and-open routing race.
+Sessions using default devices or debug WAV capture do not auto-recover.
+Initial startup failure and inference-worker failure are not automatically retried.
+
+GUI/CLI release builds passed. Running the CLI with a nonexistent input and then
+a nonexistent output returned explicit device-not-found errors (exit 1), rather
+than opening the default route. The side-by-side installer passed runtime doctor
+and retained the login `--start` shortcut. The already-running process remains
+on the preceding build until next launch. Recovery-policy tests were added but
+not run. Physical unplug/replug, recovery cancellation in the GUI, and recovered
+audio quality remain unverified; no hardware was disconnected for this check.
+
+### Protect active audio from accidental exit (2026-09-17)
+
+Closing the GUI while the engine is Starting, Running, or Stopping now opens a
+modal with Keep running / Minimize, Stop and exit, and Cancel. Dismissing the
+modal keeps the session alive. The lifecycle guard owns confirmation state;
+the dialog only dispatches choices. Stopped/error sessions retain normal exit,
+and a failed settings save clears exit confirmation before cancelling close.
+This is taskbar minimization, not a system-tray implementation or crash recovery.
+
+The Windows ML release build and installed runtime diagnostic passed. Using the
+computer-use skill, an actual running session displayed the dialog on Alt+F4;
+Keep running minimized it, and restoring showed Running with the same process.
+Stop and exit subsequently terminated that process. The updated login shortcut
+retains `--start`. Added lifecycle unit tests were not executed.
+
+Discord was inspected read-only during an active call/screen share. Its selected
+microphone was Windows Default (the physical microphone), bypassing Sooara's
+virtual-cable output, and its Input Profile was Voice Isolation. No call routing
+or processing settings were changed. Downstream Discord reception therefore
+remains unverified; the app's Running state does not establish that Discord is
+receiving its output.
+
 ### Reuse GTCRN on return to Clean Voice (2026-09-17)
 
 The passthrough reset path was reconstructing the GTCRN ONNX session whenever

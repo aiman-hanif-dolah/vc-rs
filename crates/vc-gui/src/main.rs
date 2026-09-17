@@ -18,7 +18,9 @@ use vc_core::gpu::GpuDevice;
 use vc_core::validation::CONVERSION_TIMING_LIMITS;
 use vc_core::Provider;
 
+mod close_window;
 mod lifecycle;
+mod model_picker;
 mod model_setup;
 mod onboarding;
 mod recordings;
@@ -412,6 +414,8 @@ impl GuiSettings {
 }
 
 struct VcGui {
+    model_picker: model_picker::ModelPicker,
+    close_guard: lifecycle::CloseGuard,
     soundboard: soundboard::SoundboardControls,
     recordings: recordings::RecordingControls,
     controller: EngineController,
@@ -563,14 +567,17 @@ impl VcGui {
         let discovered = discover_support_models(&mut settings);
         let onboarding = onboarding::Onboarding::new(&settings);
         let controller = EngineController::new(settings.live());
+        let recovery_error = controller.set_device_recovery(true).err();
         let _ = controller.refresh_devices(settings.input_host(), settings.output_host());
         Self {
             controller,
+            model_picker: model_picker::ModelPicker::default(),
+            close_guard: lifecycle::CloseGuard::default(),
             recordings: recordings::RecordingControls::default(),
             soundboard: soundboard::SoundboardControls::default(),
             settings,
             dirty_since: discovered.then(Instant::now),
-            ui_error,
+            ui_error: ui_error.or_else(|| recovery_error.map(|error| error.to_string())),
             telemetry: TelemetrySnapshot::default(),
             telemetry_updated_at: Instant::now() - TELEMETRY_REFRESH,
             applied_chunk_ms: None,
@@ -601,19 +608,20 @@ impl VcGui {
     }
 
     fn browse_into(&mut self, kind: ModelKind) {
-        let lang = self.settings.language;
-        // Only the RVC slot accepts .pth: picking one opens the conversion
-        // dialog instead of storing the path (the engine only loads .onnx).
-        let dialog = match kind {
-            ModelKind::Rvc => rfd::FileDialog::new()
-                .add_filter(lang.text("RVC model"), &["onnx", "pth"])
-                .add_filter(lang.text("ONNX model"), &["onnx"])
-                .add_filter(lang.text("PyTorch checkpoint"), &["pth"]),
-            ModelKind::Embedder | ModelKind::F0 => {
-                rfd::FileDialog::new().add_filter(lang.text("ONNX model"), &["onnx"])
+        if let Err(error) = self.model_picker.start(kind, self.settings.language) {
+            self.ui_error = Some(error);
+        }
+    }
+
+    fn poll_model_picker(&mut self) {
+        let selected = match self.model_picker.poll() {
+            Ok(selected) => selected,
+            Err(error) => {
+                self.ui_error = Some(error);
+                return;
             }
         };
-        if let Some(path) = dialog.pick_file() {
+        if let Some((kind, path)) = selected {
             let value = path.to_string_lossy().into_owned();
             if matches!(kind, ModelKind::Rvc) && is_pth_path(&value) {
                 self.pth_convert = Some(PthConvert::new(path));
@@ -853,10 +861,16 @@ impl eframe::App for VcGui {
         }
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if ui.ctx().input(|i| i.viewport().close_requested()) && self.dirty_since.is_some() {
+        self.poll_model_picker();
+        let (status, latest, devices) = self.controller.snapshot();
+        let close_requested = ui.ctx().input(|i| i.viewport().close_requested());
+        if close_requested && self.close_guard.request(status.state) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        } else if close_requested && self.dirty_since.is_some() {
             match save_settings(&self.settings) {
                 Ok(()) => self.dirty_since = None,
                 Err(error) => {
+                    self.close_guard.cancel();
                     self.ui_error = Some(error);
                     ui.ctx()
                         .send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -868,12 +882,12 @@ impl eframe::App for VcGui {
             .inner_margin(20)
             .show(ui, |ui| {
                 self.maybe_save();
-                let (status, latest, devices) = self.controller.snapshot();
                 if self.telemetry_updated_at.elapsed() >= TELEMETRY_REFRESH {
                     self.telemetry = latest;
                     self.telemetry_updated_at = Instant::now();
                 }
                 self.screen_ui(ui, &status, &devices);
+                self.close_window_ui(ui.ctx());
                 ui.ctx().request_repaint_after(Duration::from_millis(33));
             });
     }

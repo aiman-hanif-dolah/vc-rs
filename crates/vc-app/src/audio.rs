@@ -381,7 +381,10 @@ where
             bail!("Selected output is unavailable. Choose an output again.");
         }
     }
-    let (endpoint, rate, _) = open_output_endpoint(host, name, exclusive, buffer_ms)?;
+    let (endpoint, rate, resolved) = open_output_endpoint(host, name, exclusive, buffer_ms)?;
+    if name.is_some_and(|selected| selected != resolved) {
+        bail!("Selected output changed while opening. Choose an output again.");
+    }
     let stream = match endpoint {
         OutputEndpoint::Cpal { device, config } => {
             AudioStream::Cpal(build_cpal_output_stream(&device, &config, callback)?)
@@ -569,15 +572,19 @@ fn host_label(host: AudioHost, exclusive: bool) -> &'static str {
 }
 
 pub fn input_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
-    find_device(host.input_devices()?, name)
-        .or_else(|| host.default_input_device())
-        .ok_or_else(|| anyhow!("input device not found"))
+    match name {
+        Some(_) => find_device(host.input_devices()?, name),
+        None => host.default_input_device(),
+    }
+    .ok_or_else(|| anyhow!("input device not found: {}", name.unwrap_or("Windows/system default")))
 }
 
 pub fn output_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
-    find_device(host.output_devices()?, name)
-        .or_else(|| host.default_output_device())
-        .ok_or_else(|| anyhow!("output device not found"))
+    match name {
+        Some(_) => find_device(host.output_devices()?, name),
+        None => host.default_output_device(),
+    }
+    .ok_or_else(|| anyhow!("output device not found: {}", name.unwrap_or("Windows/system default")))
 }
 
 pub fn cpal_input_names(host: AudioHost) -> Result<Vec<String>> {
@@ -601,15 +608,17 @@ where
     I: Iterator<Item = cpal::Device>,
 {
     let needle = name?.to_lowercase();
-    devices
-        .filter_map(|device| {
-            let device_name = device_name(&device);
-            device_name
-                .to_lowercase()
-                .contains(&needle)
-                .then_some(device)
-        })
-        .next()
+    let mut partial = None;
+    for device in devices {
+        let label = device_name(&device).to_lowercase();
+        if label == needle {
+            return Some(device);
+        }
+        if partial.is_none() && label.contains(&needle) {
+            partial = Some(device);
+        }
+    }
+    partial
 }
 
 pub fn device_name(device: &cpal::Device) -> String {

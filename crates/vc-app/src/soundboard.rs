@@ -11,6 +11,19 @@ pub struct Soundboard {
 }
 
 impl Soundboard {
+    pub fn preview(
+        &self,
+        path: PathBuf,
+        host: AudioHost,
+        output: String,
+        headphones: String,
+    ) -> Result<()> {
+        let headphones = monitor_target(&output, Some(headphones))
+            .context("Choose separate monitor headphones before previewing a sound")?;
+        self.stop()?;
+        self.monitor.play(path, host, headphones)
+    }
+
     pub fn play(
         &self,
         path: PathBuf,
@@ -57,6 +70,23 @@ mod tests {
             monitor_target("Cable", Some("Headphones".into())),
             Some("Headphones".into())
         );
+    }
+
+    #[test]
+    fn preview_rejects_missing_or_main_output_monitor() {
+        let soundboard = Soundboard::default();
+        for headphones in [String::new(), "Cable".into()] {
+            assert!(soundboard
+                .preview(
+                    PathBuf::from("unused.wav"),
+                    AudioHost::default(),
+                    "Cable".into(),
+                    headphones,
+                )
+                .is_err());
+        }
+        assert!(!soundboard.snapshot().playing);
+        assert!(!soundboard.monitor_snapshot().playing);
     }
 }
 

@@ -439,6 +439,8 @@ impl Fixture {
         ));
         Self {
             app: VcGui {
+                model_picker: crate::model_picker::ModelPicker::default(),
+                close_guard: crate::lifecycle::CloseGuard::default(),
                 recordings: crate::recordings::RecordingControls::default(),
                 soundboard: crate::soundboard::SoundboardControls::default(),
                 // Start/Stop and downloads are injected. Device discovery still

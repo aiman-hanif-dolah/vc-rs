@@ -22,6 +22,8 @@ use vc_core::validation::{
 use vc_core::Provider;
 
 mod monitor;
+mod recovery;
+use recovery::DeviceRecovery;
 
 use crate::audio::{self, AudioStream, RealtimeAudio};
 
@@ -464,6 +466,7 @@ impl Telemetry {
 // on every push. Kept inline so the worker's command path stays allocation-free.
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    SetDeviceRecovery(bool),
     DeviceTest(DeviceTestConfig),
     Apply(RealtimeConfig),
     Stop,
@@ -554,6 +557,11 @@ impl EngineController {
         self.try_command(Command::Stop)
     }
 
+    /// Opt in to bounded reopening of a previously running explicit device route.
+    pub fn set_device_recovery(&self, enabled: bool) -> Result<()> {
+        self.try_command(Command::SetDeviceRecovery(enabled))
+    }
+
     pub fn refresh_devices(&self, input_host: AudioHost, output_host: AudioHost) -> Result<()> {
         self.try_command(Command::RefreshDevices(input_host, output_host))
     }
@@ -610,9 +618,20 @@ fn control_loop(
     let mut session: Option<RealtimeSession> = None;
     let mut test_session: Option<DeviceTestSession> = None;
     let mut session_revision = 0_u64;
+    let mut recovery_enabled = false;
+    let mut last_config: Option<RealtimeConfig> = None;
+    let mut recovery: Option<DeviceRecovery> = None;
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Command::SetDeviceRecovery(enabled)) => {
+                recovery_enabled = enabled;
+                if !enabled && recovery.take().is_some() {
+                    set_status(&status, EngineState::Stopped, "Device recovery cancelled");
+                }
+            }
             Ok(Command::DeviceTest(config)) => {
+                recovery = None;
+                last_config = None;
                 drop(session.take());
                 drop(test_session.take());
                 telemetry.reset();
@@ -628,6 +647,8 @@ fn control_loop(
                 }
             }
             Ok(Command::Apply(config)) => {
+                recovery = None;
+                last_config = None;
                 drop(test_session.take());
                 *test_snapshot.lock().unwrap() = DeviceTestSnapshot::default();
                 passthrough.store(config.passthrough, Ordering::Relaxed);
@@ -635,8 +656,28 @@ fn control_loop(
                 drop(session.take());
                 set_status(&status, EngineState::Starting, "Validating configuration");
                 telemetry.reset();
+                let mut startup_recovery = recovery_enabled
+                    .then(|| DeviceRecovery::new(config.clone(), Instant::now()))
+                    .flatten();
+                if let Some(pending) = startup_recovery.as_mut() {
+                    let available = device_list(config.input_host, config.output_host);
+                    let ready = pending.ready(&available, Instant::now());
+                    if let Ok(mut current) = devices.lock() {
+                        *current = available;
+                    }
+                    if !ready {
+                        recovery = startup_recovery;
+                        set_status(
+                            &status,
+                            EngineState::Starting,
+                            "Waiting for the selected audio devices. Connect them to start; Stop cancels.",
+                        );
+                        continue;
+                    }
+                }
                 match RealtimeSession::start(
-                    config,
+                    config.clone(),
+                    startup_recovery.is_some(),
                     Arc::clone(&telemetry),
                     Arc::clone(&live),
                     Arc::clone(&passthrough),
@@ -644,6 +685,7 @@ fn control_loop(
                     &status,
                 ) {
                     Ok(new_session) => {
+                        last_config = Some(config);
                         session_revision += 1;
                         if let Ok(mut current) = status.lock() {
                             *current = new_session.status();
@@ -655,6 +697,8 @@ fn control_loop(
                 }
             }
             Ok(Command::Stop) => {
+                recovery = None;
+                last_config = None;
                 drop(test_session.take());
                 *test_snapshot.lock().unwrap() = DeviceTestSnapshot::default();
                 set_status(&status, EngineState::Stopping, "Stopping");
@@ -697,11 +741,62 @@ fn control_loop(
         });
         if let Some(name) = failed_stream {
             drop(session.take());
-            set_error_message(
-                &status,
-                format!("Audio device failed: {name}. Reconnect the device and press Start."),
-                None,
-            );
+            if recovery_enabled {
+                recovery = last_config.take().and_then(|mut config| {
+                    config.passthrough = passthrough.load(Ordering::Relaxed);
+                    DeviceRecovery::new(config, Instant::now())
+                });
+            }
+            if recovery.is_some() {
+                set_status(&status, EngineState::Starting,
+                    format!("Audio device failed: {name}. Waiting for the selected devices; Stop cancels recovery."));
+            } else {
+                set_error_message(
+                    &status,
+                    format!("Audio device failed: {name}. Reconnect the device and press Start."),
+                    None,
+                );
+            }
+        }
+        if recovery.as_ref().is_some_and(|pending| pending.due(Instant::now())) {
+            let pending = recovery.as_mut().unwrap();
+            let available = device_list(pending.config.input_host, pending.config.output_host);
+            let ready = pending.ready(&available, Instant::now());
+            if let Ok(mut current) = devices.lock() {
+                *current = available;
+            }
+            if ready {
+                telemetry.reset();
+                match RealtimeSession::start(
+                    pending.config.clone(),
+                    true,
+                    Arc::clone(&telemetry),
+                    Arc::clone(&live),
+                    Arc::clone(&passthrough),
+                    Arc::clone(&monitor_epoch),
+                    &status,
+                ) {
+                    Ok(new_session) => {
+                        session_revision += 1;
+                        if let Ok(mut current) = status.lock() {
+                            *current = new_session.status();
+                            current.session_revision = session_revision;
+                        }
+                        last_config = Some(pending.config.clone());
+                        session = Some(new_session);
+                        recovery = None;
+                    }
+                    Err(error) => {
+                        if pending.failed(Instant::now()) {
+                            recovery = None;
+                            set_error(&status, &error);
+                        } else {
+                            set_status(&status, EngineState::Starting,
+                                format!("Device recovery will retry; Stop cancels. {error:#}"));
+                        }
+                    }
+                }
+            }
         }
         if let Some(session) = session.as_mut() {
             for stream in [
@@ -1144,6 +1239,7 @@ struct RealtimeSession {
 impl RealtimeSession {
     fn start(
         config: RealtimeConfig,
+        require_exact_devices: bool,
         telemetry: Arc<Telemetry>,
         live: Arc<AtomicLiveParams>,
         passthrough_live: Arc<AtomicBool>,
@@ -1171,6 +1267,12 @@ impl RealtimeSession {
             config.wasapi_buffer_ms,
         )?;
         let input_rate = audio.input_sample_rate();
+        if require_exact_devices
+            && (config.input_device.as_deref() != Some(audio.input_name())
+                || config.output_device.as_deref() != Some(audio.output_name()))
+        {
+            bail!("Selected devices changed during recovery. Waiting for the original route.");
+        }
         let output_rate = audio.output_sample_rate();
         let (input_chunk, output_chunk) = config.chunk_samples(input_rate, output_rate)?;
         let current_live = live.load();
