@@ -533,6 +533,9 @@ impl VcGui {
             );
             return;
         }
+        if !self.settings.model.trim().is_empty() {
+            self.settings.passthrough = false;
+        }
         self.apply_or_start();
     }
 
