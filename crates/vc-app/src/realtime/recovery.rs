@@ -1,12 +1,14 @@
 use super::{DeviceList, RealtimeConfig};
 use std::time::{Duration, Instant};
 
-const RETRY_INTERVAL: Duration = Duration::from_secs(3);
-const MAX_OPEN_ATTEMPTS: usize = 3;
+const INITIAL_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_OPEN_ATTEMPTS: usize = 5;
 
 pub(super) struct DeviceRecovery {
     pub(super) config: RealtimeConfig,
     next_check: Instant,
+    current_interval: Duration,
     attempts: usize,
 }
 
@@ -29,7 +31,8 @@ impl DeviceRecovery {
         }
         Some(Self {
             config,
-            next_check: now + RETRY_INTERVAL,
+            next_check: now + INITIAL_RETRY_INTERVAL,
+            current_interval: INITIAL_RETRY_INTERVAL,
             attempts: 0,
         })
     }
@@ -39,30 +42,35 @@ impl DeviceRecovery {
     }
 
     pub(super) fn ready(&mut self, devices: &DeviceList, now: Instant) -> bool {
-        self.next_check = now + RETRY_INTERVAL;
+        self.next_check = now + self.current_interval;
         let unique = |names: &[String], selected: Option<&String>| {
             selected.is_some_and(|selected| {
-                names.iter().filter(|name| *name == selected).count() == 1
-                    && names
-                        .iter()
-                        .filter(|name| name.to_lowercase().contains(&selected.to_lowercase()))
-                        .count()
-                        == 1
+                names
+                    .iter()
+                    .filter(|name| crate::audio::device_name_matches(selected, name))
+                    .count()
+                    == 1
             })
         };
-        devices.error.is_none()
+        let is_ready = devices.error.is_none()
             && unique(&devices.inputs, self.config.input_device.as_ref())
             && unique(&devices.outputs, self.config.output_device.as_ref())
             && self
                 .config
                 .monitor_device
                 .as_ref()
-                .is_none_or(|monitor| unique(&devices.outputs, Some(monitor)))
+                .is_none_or(|monitor| unique(&devices.outputs, Some(monitor)));
+        if !is_ready {
+            // Apply bounded exponential backoff when devices remain missing
+            self.current_interval = (self.current_interval * 2).min(MAX_RETRY_INTERVAL);
+        }
+        is_ready
     }
 
     pub(super) fn failed(&mut self, now: Instant) -> bool {
         self.attempts += 1;
-        self.next_check = now + RETRY_INTERVAL;
+        self.current_interval = (self.current_interval * 2).min(MAX_RETRY_INTERVAL);
+        self.next_check = now + self.current_interval;
         self.attempts >= MAX_OPEN_ATTEMPTS
     }
 }
@@ -85,7 +93,7 @@ mod tests {
         let now = Instant::now();
         let mut recovery = DeviceRecovery::new(config(), now).unwrap();
         assert!(!recovery.due(now));
-        assert!(recovery.due(now + RETRY_INTERVAL));
+        assert!(recovery.due(now + INITIAL_RETRY_INTERVAL));
         let mut devices = DeviceList {
             inputs: vec!["Mic".into()],
             outputs: vec!["Cable".into()],
@@ -113,24 +121,27 @@ mod tests {
     fn open_failures_are_bounded() {
         let now = Instant::now();
         let mut recovery = DeviceRecovery::new(config(), now).unwrap();
-        assert!(!recovery.failed(now));
-        assert!(!recovery.failed(now));
+        for _ in 0..MAX_OPEN_ATTEMPTS - 1 {
+            assert!(!recovery.failed(now));
+        }
         assert!(recovery.failed(now));
     }
 
     #[test]
-    fn waiting_does_not_consume_open_attempts_and_respects_poll_interval() {
+    fn waiting_does_not_consume_open_attempts_and_backs_off() {
         let now = Instant::now();
         let mut recovery = DeviceRecovery::new(config(), now).unwrap();
         let unavailable = DeviceList::default();
-        for index in 1..10 {
-            let check = now + RETRY_INTERVAL * index;
-            assert!(recovery.due(check));
-            assert!(!recovery.ready(&unavailable, check));
-            assert!(!recovery.due(check));
+        let mut current_time = now + INITIAL_RETRY_INTERVAL;
+        for _ in 0..5 {
+            assert!(recovery.due(current_time));
+            assert!(!recovery.ready(&unavailable, current_time));
+            assert!(!recovery.due(current_time));
+            current_time += recovery.current_interval;
         }
-        assert!(!recovery.failed(now));
-        assert!(!recovery.failed(now));
+        for _ in 0..MAX_OPEN_ATTEMPTS - 1 {
+            assert!(!recovery.failed(now));
+        }
         assert!(recovery.failed(now));
     }
 

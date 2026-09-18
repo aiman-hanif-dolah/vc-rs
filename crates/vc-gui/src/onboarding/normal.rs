@@ -119,6 +119,48 @@ impl VcGui {
         if self.settings.passthrough {
             ui.small(lang.text("Your natural voice with the selected noise reduction. Turn off Clean Voice to use the selected voice model."));
         }
+        if running {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("● {}", lang.text("Engine running")))
+                        .color(egui::Color32::LIGHT_GREEN),
+                );
+                let mode_text = if self.settings.passthrough {
+                    lang.text("Clean Voice active")
+                } else {
+                    lang.text("Voice conversion active")
+                };
+                ui.label(
+                    egui::RichText::new(format!("● {}", mode_text))
+                        .color(egui::Color32::LIGHT_BLUE),
+                );
+                if self.settings.denoiser != "off" {
+                    ui.label(
+                        egui::RichText::new(format!("● {}", lang.text("Noise reduction active")))
+                            .color(egui::Color32::LIGHT_GREEN),
+                    );
+                }
+                let audio_active =
+                    self.telemetry.output_rms > 0.001 || self.telemetry.input_device_rms > 0.001;
+                let (signal_text, signal_color) = if audio_active {
+                    (lang.text("Audio active"), egui::Color32::LIGHT_GREEN)
+                } else {
+                    (lang.text("Audio silent"), egui::Color32::GRAY)
+                };
+                ui.label(egui::RichText::new(format!("● {}", signal_text)).color(signal_color));
+            });
+            let out_lower = self.settings.output_device.to_lowercase();
+            if out_lower.contains("cable") {
+                ui.colored_label(
+                    egui::Color32::LIGHT_GREEN,
+                    lang.text("Output is set to CABLE Input. In Discord, select \"CABLE Output\" as your Input Device (Microphone) to speak with Sooara."),
+                );
+            } else {
+                ui.small(
+                    lang.text("Tip: To send Sooara's audio to Discord, select \"CABLE Input\" as your Output device and \"CABLE Output\" in Discord."),
+                );
+            }
+        }
         if busy {
             ui.small(lang.text("Preparing or stopping. Stop requests are handled after the current preparation step."));
         }

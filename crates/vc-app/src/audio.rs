@@ -12,6 +12,32 @@ use vc_core::dsp;
 const CPAL_SCRATCH_FALLBACK_SAMPLES: usize = 65_536;
 const CPAL_MAX_SCRATCH_SAMPLES: usize = 65_536;
 
+pub(crate) fn device_name_matches(selected: &str, available: &str) -> bool {
+    let selected = selected.trim().to_lowercase();
+    let available = available.trim().to_lowercase();
+    if selected.is_empty() || available.is_empty() {
+        return false;
+    }
+    if selected == available || available.contains(&selected) {
+        return true;
+    }
+
+    let selected_cable = selected.contains("vb-audio virtual cable");
+    let available_cable = available.contains("vb-audio virtual cable");
+    if !selected_cable || !available_cable {
+        return false;
+    }
+
+    let selected_capture = selected.contains("cable output");
+    let selected_render = selected.contains("cable input") || selected.contains("cable in");
+    let available_capture = available.contains("cable output");
+    let available_render = available.contains("cable input")
+        || available.contains("cable in")
+        || available.contains("speakers");
+
+    (selected_capture && available_capture) || (selected_render && available_render)
+}
+
 fn stream_format(config: &cpal::SupportedStreamConfig) -> String {
     let sample = match config.sample_format() {
         cpal::SampleFormat::F32 => "32-bit float".to_string(),
@@ -576,7 +602,12 @@ pub fn input_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Devic
         Some(_) => find_device(host.input_devices()?, name),
         None => host.default_input_device(),
     }
-    .ok_or_else(|| anyhow!("input device not found: {}", name.unwrap_or("Windows/system default")))
+    .ok_or_else(|| {
+        anyhow!(
+            "input device not found: {}",
+            name.unwrap_or("Windows/system default")
+        )
+    })
 }
 
 pub fn output_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
@@ -584,7 +615,12 @@ pub fn output_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Devi
         Some(_) => find_device(host.output_devices()?, name),
         None => host.default_output_device(),
     }
-    .ok_or_else(|| anyhow!("output device not found: {}", name.unwrap_or("Windows/system default")))
+    .ok_or_else(|| {
+        anyhow!(
+            "output device not found: {}",
+            name.unwrap_or("Windows/system default")
+        )
+    })
 }
 
 pub fn cpal_input_names(host: AudioHost) -> Result<Vec<String>> {

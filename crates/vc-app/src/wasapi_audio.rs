@@ -544,16 +544,24 @@ fn find_device(
     name: Option<&str>,
 ) -> Result<Device> {
     if let Some(name) = name {
-        let needle = name.to_lowercase();
         let devices = enumerator
             .get_device_collection(&direction)
             .with_context(|| format!("failed to enumerate WASAPI {direction} devices"))?;
+        let mut best: Option<(i32, Device)> = None;
         for index in 0..devices.get_nbr_devices()? {
             let device = devices.get_device_at_index(index)?;
             let summary = summarize_device(&device)?;
-            if summary.matches(&needle) {
-                return Ok(device);
+            if let Some(score) = summary.match_score(name) {
+                if best
+                    .as_ref()
+                    .is_none_or(|(best_score, _)| score > *best_score)
+                {
+                    best = Some((score, device));
+                }
             }
+        }
+        if let Some((_, device)) = best {
+            return Ok(device);
         }
         bail!("WASAPI {direction} device not found: {name}");
     }
@@ -572,11 +580,31 @@ struct DeviceSummary {
 }
 
 impl DeviceSummary {
-    fn matches(&self, needle: &str) -> bool {
-        self.id.to_lowercase().contains(needle)
-            || self.friendly_name.to_lowercase().contains(needle)
-            || self.description.to_lowercase().contains(needle)
-            || self.interface_name.to_lowercase().contains(needle)
+    fn match_score(&self, selected: &str) -> Option<i32> {
+        let fields = [
+            &self.id,
+            &self.friendly_name,
+            &self.description,
+            &self.interface_name,
+        ];
+        fields
+            .iter()
+            .filter_map(|field| {
+                if field.eq_ignore_ascii_case(selected) {
+                    Some(100)
+                } else if field.to_lowercase().contains(&selected.to_lowercase()) {
+                    Some(80)
+                } else if crate::audio::device_name_matches(selected, field) {
+                    Some(if field.to_lowercase().contains("cable in") {
+                        70
+                    } else {
+                        60
+                    })
+                } else {
+                    None
+                }
+            })
+            .max()
     }
 }
 

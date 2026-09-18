@@ -95,7 +95,9 @@ fn ui_start_does_not_redirect_for_setup_checks() {
 #[test]
 fn ui_normal_transport_pending_and_passthrough() {
     for lang in [text::Language::English, text::Language::Japanese] {
-        let mut h = harness(ready_main_fixture(lang));
+        let mut fixture = ready_main_fixture(lang);
+        fixture.app.settings.passthrough = false;
+        let mut h = harness(fixture);
         assert!(h.query_by_label(lang.text(text::STOP)).is_none());
         h.get_by_label(lang.text(text::START)).click();
         h.run_steps(4);
@@ -118,7 +120,7 @@ fn ui_normal_transport_pending_and_passthrough() {
         h.state_mut().app.settings.extra_convert_ms += 10;
         h.run_steps(4);
         h.get_by_label(lang.text("Unapplied changes — Restart to apply."));
-        h.get_by_label(lang.text("Passthrough")).click();
+        h.get_by_label(lang.text("Clean Voice")).click();
         h.run_steps(4);
         assert!(h.state().app.settings.passthrough);
         assert!(h.query_all_by_label(lang.text(text::PITCH)).count() > 0);
@@ -702,6 +704,8 @@ fn ui_prepared_voice_waits_for_continue_on_preparation() {
         assert_eq!(h.state().status.state, EngineState::Stopped);
         assert!(h.state().app.onboarding.effects.device_requests.is_empty());
         assert_eq!(h.state().app.settings.output_gain, 1.0);
+        h.get_by_label(language.text(text::SETUP)).scroll_to_me();
+        h.run_steps(4);
         h.get_by_label(language.text(text::SETUP)).click();
         h.run_steps(4);
         assert_eq!(h.state().app.onboarding.step, Some(Step::Audio));
@@ -867,6 +871,8 @@ fn ui_skip_opens_normal_screen_and_persists_without_claiming_preview() {
             let saved = toml::to_string(&h.state().app.settings).unwrap();
             let restored: GuiSettings = toml::from_str(&saved).unwrap();
             assert_eq!(Onboarding::new(&restored).step, None);
+            h.get_by_label(language.text(text::SETUP)).scroll_to_me();
+            h.run_steps(4);
             h.get_by_label(language.text(text::SETUP)).click();
             h.run_steps(4);
             assert_eq!(h.state().app.onboarding.step, Some(Step::Audio));
@@ -889,7 +895,9 @@ fn ui_busy_engine_disables_start() {
 
 #[test]
 fn ui_start_with_missing_models_reports_validation_error() {
-    let mut h = harness(Fixture::new(None, EngineState::Stopped));
+    let mut fixture = Fixture::new(None, EngineState::Stopped);
+    fixture.app.settings.passthrough = false;
+    let mut h = harness(fixture);
     h.get_by_label(text::START).click();
     h.run_steps(4);
     assert_eq!(
@@ -903,6 +911,8 @@ fn ui_start_with_missing_models_reports_validation_error() {
 fn ui_setup_button_returns_to_device_test() {
     let fixture = Fixture::new(None, EngineState::Stopped);
     let mut h = harness(fixture);
+    h.get_by_label(text::SETUP).scroll_to_me();
+    h.run_steps(4);
     h.get_by_label(text::SETUP).click();
     h.run_steps(4);
     h.get_by_label("Check your microphone and headphones");

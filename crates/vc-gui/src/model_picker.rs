@@ -26,8 +26,9 @@ impl ModelPicker {
                         .add_filter(language.text("RVC model"), &["onnx", "pth"])
                         .add_filter(language.text("ONNX model"), &["onnx"])
                         .add_filter(language.text("PyTorch checkpoint"), &["pth"]),
-                    ModelKind::Embedder | ModelKind::F0 => rfd::FileDialog::new()
-                        .add_filter(language.text("ONNX model"), &["onnx"]),
+                    ModelKind::Embedder | ModelKind::F0 => {
+                        rfd::FileDialog::new().add_filter(language.text("ONNX model"), &["onnx"])
+                    }
                 };
                 let _ = tx.send((kind, dialog.pick_file()));
             })
@@ -70,7 +71,9 @@ mod tests {
 
         let (tx, rx) = mpsc::channel();
         picker.pending = Some(rx);
-        assert!(tx.send((ModelKind::F0, Some(PathBuf::from("pitch.onnx")))).is_ok());
+        assert!(tx
+            .send((ModelKind::F0, Some(PathBuf::from("pitch.onnx"))))
+            .is_ok());
         let (kind, path) = picker.poll().unwrap().unwrap();
         assert!(matches!(kind, ModelKind::F0));
         assert_eq!(path, PathBuf::from("pitch.onnx"));

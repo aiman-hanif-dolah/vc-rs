@@ -425,7 +425,10 @@ impl VcGui {
             text::CHOOSE
         };
         if ui
-            .add_enabled(!self.model_picker.active(), egui::Button::new(lang.text(choose_label)))
+            .add_enabled(
+                !self.model_picker.active(),
+                egui::Button::new(lang.text(choose_label)),
+            )
             .clicked()
         {
             self.browse_into(ModelKind::Rvc);

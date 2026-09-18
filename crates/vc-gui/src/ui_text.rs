@@ -309,6 +309,14 @@ pub const TRANSLATIONS: &[(&str, &str)] = &[
     ("Parsing checkpoint…", "チェックポイントを解析中…"),
     ("Building ONNX graph…", "ONNXグラフを構築中…"),
     ("Writing model…", "モデルを書き込み中…"),
+    ("Engine running", "エンジン稼働中"),
+    ("Clean Voice active", "クリーンボイス稼働中"),
+    ("Voice conversion active", "音声変換稼働中"),
+    ("Noise reduction active", "ノイズ抑制稼働中"),
+    ("Audio active", "音声信号あり"),
+    ("Audio silent", "音声信号なし"),
+    ("Output is set to CABLE Input. In Discord, select \"CABLE Output\" as your Input Device (Microphone) to speak with Sooara.", "出力先が CABLE Input に設定されています。Discordの「入力デバイス（マイク）」で「CABLE Output」を選択してください。"),
+    ("Tip: To send Sooara's audio to Discord, select \"CABLE Input\" as your Output device and \"CABLE Output\" in Discord.", "ヒント: Sooaraの声をDiscordに届けるには、出力デバイスに「CABLE Input」を選び、Discord側で「CABLE Output」を選択してください。"),
 ];
 
 #[cfg(test)]

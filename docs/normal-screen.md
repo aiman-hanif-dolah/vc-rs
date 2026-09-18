@@ -34,3 +34,9 @@ Meters show the existing conversion telemetry as RMS dBFS, not the tutorial's
 pre-denoise peak meter. Nominal content delay excludes device/queue latency.
 Unavailable metrics are not fabricated. Tests replace engine starts and downloads
 and do not use real audio or save user settings; see the GUI README for rendering.
+
+When running, the toolbar presents real-time status badges reflecting engine state,
+voice conversion mode (Voice conversion active vs. Clean Voice active), noise reduction
+status, and audio signal activity. It also provides actionable routing guidance: if
+VB-CABLE is selected as the output device, it displays clear instructions for configuring
+Discord's input device to `CABLE Output`.

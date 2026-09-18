@@ -47,7 +47,6 @@ fn main() -> eframe::Result {
         lifecycle::activate_instance(&lock_path);
         return Ok(());
     };
-    let start_audio = std::env::args_os().any(|argument| argument == "--start");
     eframe::run_native(
         "Sooara",
         eframe::NativeOptions {
@@ -69,9 +68,7 @@ fn main() -> eframe::Result {
                 .insert(egui::TextStyle::Button, egui::FontId::proportional(16.0));
             cc.egui_ctx.set_global_style(style);
             let mut app = VcGui::new();
-            if start_audio {
-                app.start_saved_configuration();
-            }
+            app.start_saved_configuration();
             Ok(Box::new(app))
         }),
     )
@@ -868,7 +865,8 @@ impl eframe::App for VcGui {
         let (status, latest, devices) = self.controller.snapshot();
         let close_requested = ui.ctx().input(|i| i.viewport().close_requested());
         if close_requested && self.close_guard.request(status.state) {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
         } else if close_requested && self.dirty_since.is_some() {
             match save_settings(&self.settings) {
                 Ok(()) => self.dirty_since = None,
@@ -1475,11 +1473,9 @@ mod tests {
 
     #[test]
     fn default_realtime_config_requires_models() {
-        assert!(GuiSettings::default()
-            .realtime()
-            .unwrap()
-            .validate()
-            .is_err());
+        let mut settings = GuiSettings::default();
+        settings.passthrough = false;
+        assert!(settings.realtime().unwrap().validate().is_err());
     }
 
     #[test]
