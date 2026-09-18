@@ -55,11 +55,17 @@ impl DeviceRecovery {
         let is_ready = devices.error.is_none()
             && unique(&devices.inputs, self.config.input_device.as_ref())
             && unique(&devices.outputs, self.config.output_device.as_ref())
-            && self
-                .config
-                .monitor_device
-                .as_ref()
-                .is_none_or(|monitor| unique(&devices.outputs, Some(monitor)));
+            // Monitoring is optional; it must never prevent the processed
+            // microphone route from starting when the monitor endpoint is slow
+            // to appear or has been renamed by Windows.
+            && (self.config.monitor_device.is_none()
+                || devices
+                    .outputs
+                    .iter()
+                    .any(|name| crate::audio::device_name_matches(
+                        self.config.monitor_device.as_deref().unwrap(),
+                        name,
+                    )));
         if !is_ready {
             // Apply bounded exponential backoff when devices remain missing
             self.current_interval = (self.current_interval * 2).min(MAX_RETRY_INTERVAL);

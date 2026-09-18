@@ -643,18 +643,33 @@ fn find_device<I>(devices: I, name: Option<&str>) -> Option<cpal::Device>
 where
     I: Iterator<Item = cpal::Device>,
 {
-    let needle = name?.to_lowercase();
-    let mut partial = None;
+    let needle = name?;
+    let mut best: Option<(i32, cpal::Device)> = None;
     for device in devices {
-        let label = device_name(&device).to_lowercase();
-        if label == needle {
-            return Some(device);
-        }
-        if partial.is_none() && label.contains(&needle) {
-            partial = Some(device);
+        let label = device_name(&device);
+        let score = if label.eq_ignore_ascii_case(needle) {
+            Some(100)
+        } else if label.to_lowercase().contains(&needle.to_lowercase()) {
+            Some(80)
+        } else if device_name_matches(needle, &label) {
+            Some(if label.to_lowercase().contains("cable in") {
+                70
+            } else {
+                60
+            })
+        } else {
+            None
+        };
+        if let Some(score) = score {
+            if best
+                .as_ref()
+                .is_none_or(|(best_score, _)| score > *best_score)
+            {
+                best = Some((score, device));
+            }
         }
     }
-    partial
+    best.map(|(_, device)| device)
 }
 
 pub fn device_name(device: &cpal::Device) -> String {
