@@ -38,6 +38,24 @@ Weights remain ignored local assets. Conversion used the shared Rust converter.
 
 ## Next acceptance work
 
+### Headphone-only soundboard preview (2026-09-18)
+
+Sound tiles now expose a right-click Preview in headphones only action. The
+shared Soundboard service rejects missing or identical main/monitor endpoints,
+stops existing clip playback, and sends the new clip only through its monitor
+player. Ordinary left-click one-shot playback is unchanged. Preview uses the
+applied route when the engine is running, not an unapplied output selection.
+Monitor playback also highlights its matching tile.
+
+GUI/CLI release builds, installed doctor, and compilation of vc-app/vc-gui test
+code passed; no automated tests were executed. Using the computer-use skill in
+the isolated profile, selected real headphones with a deliberately unavailable
+main-output name. Opened the context menu and previewed a bundled clip; the UI
+remained responsive and showed no playback error afterward. This checks the
+action and error path, not acoustic headphone output or remote-call reception.
+The isolated app was then closed. The real running app and Discord routing were
+not changed; the preview update is installed for the next normal launch.
+
 ### Nonblocking model selection (2026-09-18)
 
 The RVC/ContentVec/RMVPE chooser no longer calls the native file dialog on the
