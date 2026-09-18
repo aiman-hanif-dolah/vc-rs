@@ -661,25 +661,9 @@ fn control_loop(
                 drop(session.take());
                 set_status(&status, EngineState::Starting, "Validating configuration");
                 telemetry.reset();
-                let mut startup_recovery = recovery_enabled
+                let startup_recovery = recovery_enabled
                     .then(|| DeviceRecovery::new(config.clone(), Instant::now()))
                     .flatten();
-                if let Some(pending) = startup_recovery.as_mut() {
-                    let available = device_list(config.input_host, config.output_host);
-                    let ready = pending.ready(&available, Instant::now());
-                    if let Ok(mut current) = devices.lock() {
-                        *current = available;
-                    }
-                    if !ready {
-                        recovery = startup_recovery;
-                        set_status(
-                            &status,
-                            EngineState::Starting,
-                            "Waiting for the selected audio devices. Connect them to start; Stop cancels.",
-                        );
-                        continue;
-                    }
-                }
                 match RealtimeSession::start(
                     config.clone(),
                     startup_recovery.is_some(),
@@ -698,7 +682,18 @@ fn control_loop(
                         }
                         session = Some(new_session);
                     }
-                    Err(err) => set_error(&status, &err),
+                    Err(err) => {
+                        if startup_recovery.is_some() {
+                            recovery = startup_recovery;
+                            set_status(
+                                &status,
+                                EngineState::Starting,
+                                format!("Audio startup failed; retrying: {err:#}"),
+                            );
+                        } else {
+                            set_error(&status, &err);
+                        }
+                    }
                 }
             }
             Ok(Command::Stop) => {
