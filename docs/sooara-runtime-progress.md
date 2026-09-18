@@ -38,6 +38,18 @@ Weights remain ignored local assets. Conversion used the shared Rust converter.
 
 ## Next acceptance work
 
+### Latest installed process activated (2026-09-18)
+
+The older running process was closed through its normal app lifecycle and the
+verified `20260918-204914-333` installation was launched with `--start`.
+The UI reached `Running` with the selected PD200X microphone, VB-CABLE output,
+and GTCRN configuration; the earlier stale GTCRN error was no longer present.
+Clean Voice was then turned off in the live UI, and the saved setting changed to
+`passthrough = false`, activating the RVC voice-conversion route for the cable.
+The process remained responsive. This establishes current local routing and
+activation, but does not prove that another Discord participant can hear the
+processed voice or that the model sounds natural.
+
 ### Output prebuffer before device playback (2026-09-18)
 
 Realtime startup now begins input capture first, waits up to 500 ms for two
