@@ -341,10 +341,12 @@ without touching callers.
 - **Reset.** Resuming conversion after passthrough invokes both
   `RvcPipeline::reset_streaming_state` and
   `ChunkConverter::reset_streaming_state`. The pipeline resets its denoisers and
-  rebuilds `RvcStreamState` at the loaded input rate, clearing waveform/F0
+  resets `RvcStreamState` at the loaded input rate, clearing waveform/F0
   history and the fixed input FIFO, re-seeding noise, and zeroing NSF phase and
-  absolute position. The converter clears the smoother and output filter/FIFO
-  together. Sample-rate or chunk changes instead require a newly loaded
+  absolute position. Fixed input FFT plans and buffer capacity are retained;
+  filter state and delay trimming restart exactly as for a fresh adapter.
+  The converter clears the smoother and output filter/FIFO together, likewise
+  retaining its plans and allocations. Sample-rate or chunk changes require a newly loaded
   pipeline and converter; they cannot be applied by passing a new rate to the
   public `process` method. The private `generate_input` rate-configuration path
   is not a frontend reconfiguration mechanism. Model reload and stream restart

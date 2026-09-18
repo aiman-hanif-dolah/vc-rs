@@ -10,7 +10,9 @@ mod realtime;
 mod recording_library;
 mod soundboard;
 
-pub use soundboard::{soundboard_directory, Soundboard};
+pub use soundboard::{
+    import_soundboard_clip, soundboard_directory, user_soundboard_directory, Soundboard,
+};
 
 pub use playback::{AudioFilePlayer, PlaybackSnapshot};
 pub use recording_library::{

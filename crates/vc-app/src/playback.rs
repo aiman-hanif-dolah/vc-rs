@@ -50,6 +50,19 @@ impl Default for AudioFilePlayer {
 }
 
 impl AudioFilePlayer {
+    pub fn play_monitor(
+        &self,
+        path: PathBuf,
+        host: AudioHost,
+        main_output: &str,
+        headphones: String,
+    ) -> Result<()> {
+        if headphones.trim().is_empty() || headphones == main_output {
+            bail!("Choose separate monitor headphones before playing a recording");
+        }
+        self.play(path, host, headphones)
+    }
+
     pub fn play(&self, path: PathBuf, host: AudioHost, device: String) -> Result<()> {
         if device.trim().is_empty() {
             bail!("Choose playback headphones first");
@@ -204,7 +217,7 @@ fn open(
     })
 }
 
-fn read_wav(path: &Path) -> Result<(Vec<f32>, u32)> {
+pub(crate) fn read_wav(path: &Path) -> Result<(Vec<f32>, u32)> {
     let mut reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
     if spec.channels == 0
@@ -248,6 +261,24 @@ fn fill_playback(samples: &[f32], position: usize, output: &mut [f32]) -> usize 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitor_playback_rejects_missing_or_main_output_device() {
+        let player = AudioFilePlayer::default();
+        for headphones in ["", " ", "Cable"] {
+            assert!(player
+                .play_monitor(
+                    PathBuf::from("unused.wav"),
+                    AudioHost::default(),
+                    "Cable",
+                    headphones.into()
+                )
+                .is_err());
+        }
+        assert_eq!(player.generation.load(Ordering::Acquire), 0);
+        assert!(!player.snapshot().playing);
+        assert!(!player.snapshot().loading);
+    }
 
     #[test]
     fn playback_finishes_once_and_fills_tail_with_silence() {

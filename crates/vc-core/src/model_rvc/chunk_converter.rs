@@ -130,10 +130,14 @@ impl<M: VoiceModel> ChunkConverter<M> {
     /// paused. Reusing the old smoother history would join fresh model output
     /// against audio emitted before the pause.
     pub fn reset_streaming_state(&mut self) {
-        self.smoother = None;
-        // Join history and the FFT/FIFO timeline are a single stream. Retaining
-        // either across pass-through would replay stale audio on resumption.
-        self.output_resampler = None;
+        // Clear both timelines together, retaining plans and capacity warmed
+        // before device startup. Rate changes still rebuild in ensure_smoother.
+        if let Some((_, smoother)) = self.smoother.as_mut() {
+            smoother.reset();
+        }
+        if let Some(resampler) = self.output_resampler.as_mut() {
+            resampler.reset();
+        }
     }
 
     pub fn process_chunk(
@@ -418,6 +422,43 @@ mod tests {
     }
 
     #[test]
+    fn reset_reuses_output_state_and_matches_fresh_conversion() {
+        for kind in [SmoothingKind::Sola, SmoothingKind::Psola] {
+            let settings = ChunkOutputConfig {
+                kind,
+                output_sample_rate: 48_000,
+                output_chunk_samples: 960,
+                crossfade_ms: 5,
+                sola_search_ms: 2,
+                tail_discard_ms: 0,
+            };
+            let make_model =
+                || FakeModel::new((0..8).map(|_| Ok(output(vec![0.25; 1600], 40_000))));
+            let mut resumed = ChunkConverter::new(make_model(), settings);
+            let mut fresh = ChunkConverter::new(make_model(), settings);
+            let mut actual = Vec::new();
+            let mut expected = Vec::new();
+            for _ in 0..3 {
+                resumed
+                    .process_chunk(&[0.0; 960], 48_000, &mut actual)
+                    .unwrap();
+            }
+            resumed.reset_streaming_state();
+            assert!(resumed.smoother.is_some());
+            assert!(resumed.output_resampler.is_some());
+            for _ in 0..5 {
+                resumed
+                    .process_chunk(&[0.0; 960], 48_000, &mut actual)
+                    .unwrap();
+                fresh
+                    .process_chunk(&[0.0; 960], 48_000, &mut expected)
+                    .unwrap();
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
     fn content_delay_uses_capped_crossfade_and_disabled_join_geometry() {
         let mut settings = config();
         settings.crossfade_ms = 20;
@@ -504,8 +545,9 @@ mod tests {
             converter.process_chunk(&[], 48_000, &mut out).unwrap();
         }
         assert!(out.iter().any(|sample| sample.abs() > 0.1));
+        let delay = converter.output_resample_delay_samples();
         converter.reset_streaming_state();
-        assert_eq!(converter.output_resample_delay_samples(), None);
+        assert_eq!(converter.output_resample_delay_samples(), delay);
         converter.process_chunk(&[], 48_000, &mut out).unwrap();
         assert_eq!(out, initial);
     }

@@ -331,6 +331,20 @@ pub enum ChunkSmoother {
 }
 
 impl ChunkSmoother {
+    pub(crate) fn reset(&mut self) {
+        let joiner = match self {
+            Self::Sola(joiner) => joiner,
+            Self::Psola(joiner) => {
+                joiner.pitch_mark_weights.clear();
+                &mut joiner.inner
+            }
+        };
+        joiner.sola_buffer.clear();
+        joiner.weighted_reference.clear();
+        joiner.output_buffer.clear();
+        joiner.last_diagnostics = JoinDiagnostics::default();
+    }
+
     #[cfg(test)]
     fn prime(&mut self, audio: &[f32]) {
         match self {

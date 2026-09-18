@@ -139,13 +139,6 @@ pub struct RvcPipeline {
     // advance audio, F0, latent noise and NSF phase on different timelines.
     chunk_timing: RvcChunkTiming,
     input_sample_rate: u32,
-    // The model's `rnd` (latent-noise) channel count, retained so the rolling
-    // noise state can be rebuilt with the same shape on `reset_streaming_state`.
-    // `None` when the model samples its own noise.
-    rnd_channels: Option<usize>,
-    // Streaming NSF time base (frame hop / sample rate), retained to rebuild the
-    // streaming time state on reset. `None` for conventional exports.
-    stream_params: Option<StreamParams>,
     // Reused channel-major `[1, channels, feature_len]` latent-noise tensor,
     // refilled per chunk from the rolling noise state and bound by every backend.
     rnd_scratch: Vec<f32>,
@@ -549,8 +542,6 @@ impl RvcPipeline {
             )?,
             chunk_timing,
             input_sample_rate: config.sample_rate,
-            rnd_channels,
-            stream_params,
             rnd_scratch: Vec::new(),
             nsf_scratch: Vec::new(),
             phase_out_scratch: Vec::new(),
@@ -1049,8 +1040,6 @@ impl RvcPipeline {
             )?,
             chunk_timing,
             input_sample_rate: config.sample_rate,
-            rnd_channels,
-            stream_params,
             rnd_scratch: Vec::new(),
             nsf_scratch: Vec::new(),
             phase_out_scratch: Vec::new(),
@@ -1152,26 +1141,7 @@ impl RvcPipeline {
                 floor: self.noise_gate_floor,
             },
         )?;
-        // Preserve the loaded GTCRN denoiser across a context reset, but reset its
-        // fixed-delay/cache state (mirroring the RNNoise reset above) so it does
-        // not emit audio captured before the pause.
-        #[cfg(feature = "gtcrn")]
-        let gtcrn = self.stream_state.gtcrn.take();
-        // Rebuilding the stream state re-seeds the rolling noise/phase state and
-        // zeroes the NSF phase / absolute position, so a resumed stream is
-        // reproducible from its start.
-        self.stream_state = RvcStreamState::new_configured(
-            self.rvc_sample_rate,
-            self.rnd_channels,
-            self.stream_params,
-            self.input_sample_rate,
-            self.chunk_timing.input_chunk_samples,
-        )?;
-        #[cfg(feature = "gtcrn")]
-        if let Some(mut gtcrn) = gtcrn {
-            gtcrn.reset()?;
-            self.stream_state.gtcrn = Some(gtcrn);
-        }
+        self.stream_state.reset_streaming_state()?;
         self.input_scratch.clear();
         self.rnd_scratch.clear();
         self.nsf_scratch.clear();

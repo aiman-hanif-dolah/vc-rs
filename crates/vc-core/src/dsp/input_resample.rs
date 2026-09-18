@@ -52,6 +52,23 @@ impl FixedInputResampler {
         self.delay_samples
     }
 
+    pub(crate) fn reset(&mut self) {
+        if let Some(fft) = self.resampler.resampler.as_mut() {
+            fft.reset();
+        }
+        self.resampler.pending_input.clear();
+        self.resampler.pending_input_start = 0;
+        self.resampler.output_scratch.clear();
+        self.resampler.discard_output = self
+            .resampler
+            .resampler
+            .as_ref()
+            .map_or(0, |fft| fft.output_delay());
+        self.pending_output.clear();
+        self.pending_output.resize(self.delay_samples, 0.0);
+        self.pending_start = 0;
+    }
+
     /// Append exactly the nominal model increment. The caller's timing plan
     /// must ensure consecutive requests equal the rational input duration.
     pub(crate) fn process_into(
@@ -88,6 +105,34 @@ impl FixedInputResampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_matches_fresh_resampler_across_rates_and_partial_blocks() {
+        for rate in [16_000, 44_100, 48_000, 96_000] {
+            let input_hop = rate * 30 / 1000;
+            let mut resumed = FixedInputResampler::new(rate, 16_000, input_hop, 480).unwrap();
+            let mut fresh = FixedInputResampler::new(rate, 16_000, input_hop, 480).unwrap();
+            let mut actual = Vec::new();
+            let mut expected = Vec::new();
+            for _ in 0..7 {
+                resumed
+                    .process_into(&vec![0.75; input_hop], 480, &mut actual)
+                    .unwrap();
+            }
+            resumed.reset();
+            assert_eq!(resumed.delay_samples(), fresh.delay_samples());
+            for index in 0..20 {
+                let signal: Vec<f32> = (0..input_hop)
+                    .map(|i| ((i + index * input_hop) as f32 * 0.07).sin() * 0.25)
+                    .collect();
+                actual.clear();
+                expected.clear();
+                resumed.process_into(&signal, 480, &mut actual).unwrap();
+                fresh.process_into(&signal, 480, &mut expected).unwrap();
+                assert_eq!(actual, expected, "rate={rate} chunk={index}");
+            }
+        }
+    }
 
     #[test]
     fn fixed_increments_preserve_continuous_signal_across_resampler_phases() {

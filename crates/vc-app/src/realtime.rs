@@ -385,6 +385,8 @@ pub struct TelemetrySnapshot {
     /// None before the first RVC chunk and while passthrough is active.
     pub content_delay_samples: Option<u64>,
     pub input_rms: f32,
+    /// Device input RMS after live gain, before clipping and denoising.
+    pub input_device_rms: f32,
     pub output_rms: f32,
     /// Device input peak after live gain, before clipping and denoising.
     pub input_peak: f32,
@@ -408,6 +410,7 @@ struct Telemetry {
     // zero. One atomic avoids racing a validity flag against the sample count.
     content_delay_encoded: AtomicU64,
     input_rms_bits: AtomicU32,
+    input_device_rms_bits: AtomicU32,
     output_rms_bits: AtomicU32,
     input_peak_bits: AtomicU32,
     output_peak_bits: AtomicU32,
@@ -427,6 +430,7 @@ impl Telemetry {
         self.processing_us.store(0, Ordering::Relaxed);
         self.content_delay_encoded.store(0, Ordering::Relaxed);
         self.input_rms_bits.store(0, Ordering::Relaxed);
+        self.input_device_rms_bits.store(0, Ordering::Relaxed);
         self.output_rms_bits.store(0, Ordering::Relaxed);
         self.input_peak_bits.store(0, Ordering::Relaxed);
         self.output_peak_bits.store(0, Ordering::Relaxed);
@@ -449,6 +453,7 @@ impl Telemetry {
                 .load(Ordering::Relaxed)
                 .checked_sub(1),
             input_rms: f32::from_bits(self.input_rms_bits.load(Ordering::Relaxed)),
+            input_device_rms: f32::from_bits(self.input_device_rms_bits.load(Ordering::Relaxed)),
             output_rms: f32::from_bits(self.output_rms_bits.load(Ordering::Relaxed)),
             input_peak: f32::from_bits(self.input_peak_bits.load(Ordering::Relaxed)),
             output_peak: f32::from_bits(self.output_peak_bits.load(Ordering::Relaxed)),
@@ -758,7 +763,10 @@ fn control_loop(
                 );
             }
         }
-        if recovery.as_ref().is_some_and(|pending| pending.due(Instant::now())) {
+        if recovery
+            .as_ref()
+            .is_some_and(|pending| pending.due(Instant::now()))
+        {
             let pending = recovery.as_mut().unwrap();
             let available = device_list(pending.config.input_host, pending.config.output_host);
             let ready = pending.ready(&available, Instant::now());
@@ -791,8 +799,11 @@ fn control_loop(
                             recovery = None;
                             set_error(&status, &error);
                         } else {
-                            set_status(&status, EngineState::Starting,
-                                format!("Device recovery will retry; Stop cancels. {error:#}"));
+                            set_status(
+                                &status,
+                                EngineState::Starting,
+                                format!("Device recovery will retry; Stop cancels. {error:#}"),
+                            );
                         }
                     }
                 }
@@ -1453,6 +1464,8 @@ impl RealtimeSession {
                         // must still warn when denoising hides an overloaded mic.
                         let input_peak = sample_peak(&input_acc[..input_chunk])
                             * live_params.input_gain.max(0.0);
+                        let input_device_rms =
+                            dsp::rms(&input_acc[..input_chunk]) * live_params.input_gain.max(0.0);
                         let stats = model.process_chunk(
                             &input_acc[..input_chunk],
                             input_rate,
@@ -1493,6 +1506,9 @@ impl RealtimeSession {
                         worker_telemetry
                             .input_rms_bits
                             .store(stats.input_rms.to_bits(), Ordering::Relaxed);
+                        worker_telemetry
+                            .input_device_rms_bits
+                            .store(input_device_rms.to_bits(), Ordering::Relaxed);
                         worker_telemetry
                             .output_rms_bits
                             .store(stats.output_rms.to_bits(), Ordering::Relaxed);
@@ -1537,11 +1553,17 @@ impl RealtimeSession {
                 })?,
         );
 
-        let playback = output_stream.play().and_then(|_| {
+        // Start capture first so the worker can produce the first converted
+        // chunk. Starting playback immediately makes the device consume an
+        // empty ring while model loading/inference is still in flight, creating
+        // avoidable startup underruns before steady state begins.
+        let playback = input_stream.play().and_then(|_| {
+            wait_for_output_prefill(&running, &telemetry, output_chunk.saturating_mul(2));
+            output_stream.play()?;
             if let Some(stream) = &monitor_stream {
                 stream.play()?;
             }
-            input_stream.play()
+            Ok(())
         });
         if let Err(err) = playback {
             drop(input_stream);
@@ -1591,6 +1613,16 @@ impl RealtimeSession {
     /// The error that stopped the worker, if it stopped because of one.
     fn last_error(&self) -> Option<String> {
         self.last_error.lock().ok().and_then(|slot| slot.clone())
+    }
+}
+
+fn wait_for_output_prefill(running: &AtomicBool, telemetry: &Telemetry, output_chunk: usize) {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while running.load(Ordering::Relaxed)
+        && telemetry.output_buffer_samples.load(Ordering::Relaxed) < output_chunk as u64
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(2));
     }
 }
 
@@ -1785,6 +1817,21 @@ mod tests {
         telemetry.reset();
         assert_eq!(telemetry.snapshot().input_peak, 0.0);
         assert_eq!(telemetry.snapshot().output_peak, 0.0);
+    }
+    #[test]
+    fn device_input_meter_is_independent_of_denoised_input_and_resets() {
+        let telemetry = Telemetry::default();
+        telemetry
+            .input_device_rms_bits
+            .store(dsp::rms(&[0.5, -0.5]).to_bits(), Ordering::Relaxed);
+        telemetry
+            .input_rms_bits
+            .store(0.01_f32.to_bits(), Ordering::Relaxed);
+        assert_eq!(telemetry.snapshot().input_device_rms, 0.5);
+        assert_eq!(telemetry.snapshot().input_rms, 0.01);
+        telemetry.reset();
+        assert_eq!(telemetry.snapshot().input_device_rms, 0.0);
+        assert_eq!(telemetry.snapshot().input_rms, 0.0);
     }
     #[test]
     fn telemetry_distinguishes_unknown_and_zero_content_delay_and_resets() {

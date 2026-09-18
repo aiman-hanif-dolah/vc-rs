@@ -213,10 +213,9 @@ impl OutputResampler {
         Ok(())
     }
 
-    /// Restart an isolated finite window without rebuilding FFT plans/scratch.
-    /// RMS references overlap across calls: carrying filter state between them
-    /// would process repeated content as new audio and alter the gain envelope.
-    fn reset(&mut self) {
+    /// Restart the timeline without rebuilding FFT plans/scratch. Used for
+    /// isolated RMS windows and conversion resume; neither may replay old audio.
+    pub(crate) fn reset(&mut self) {
         if let Some(fft) = self.resampler.as_mut() {
             fft.reset();
         }

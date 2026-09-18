@@ -159,6 +159,25 @@ impl RvcStreamState {
         delay
     }
 
+    /// Reset the complete input timeline without rebuilding fixed-rate FFT plans.
+    pub(super) fn reset_streaming_state(&mut self) -> Result<()> {
+        self.audio_buffer.clear();
+        self.audio_16k_buffer.clear();
+        self.pitchf_buffer.clear();
+        self.prev_vol = 0.0;
+        self.prev_silence = false;
+        if let Some(resampler) = self.resampler_16k.as_mut() {
+            resampler.reset();
+        }
+        // Reference resampling resets itself for each independent window.
+        self.time_state.reset();
+        #[cfg(feature = "gtcrn")]
+        if let Some(gtcrn) = self.gtcrn.as_mut() {
+            gtcrn.reset()?;
+        }
+        Ok(())
+    }
+
     fn configure_input_rate(&mut self, sample_rate: u32, input_hop: usize) -> Result<()> {
         ensure!(sample_rate > 0, "input sample rate must be positive");
         let output_hop = usize::try_from(

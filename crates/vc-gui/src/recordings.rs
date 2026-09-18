@@ -11,7 +11,11 @@ pub(crate) struct RecordingControls {
 }
 
 impl VcGui {
-    pub(crate) fn recordings_ui(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn recordings_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        status: &vc_app::EngineStatusSnapshot,
+    ) {
         if !self.recordings.library_initialized {
             self.recordings.library_initialized = true;
             match vc_app::recordings_directory() {
@@ -89,13 +93,7 @@ impl VcGui {
                 });
             if let Some(path) = play {
                 self.recordings.selected = Some(path.clone());
-                if let Err(error) = self.recordings.player.play(
-                    path,
-                    self.settings.output_host(),
-                    self.settings.monitor_device.clone(),
-                ) {
-                    self.ui_error = Some(error.to_string());
-                }
+                self.play_recording(path, status);
             }
         }
         ui.horizontal_wrapped(|ui| {
@@ -123,13 +121,7 @@ impl VcGui {
                 .clicked()
             {
                 if let Some(path) = self.recordings.selected.clone() {
-                    if let Err(error) = self.recordings.player.play(
-                        path,
-                        self.settings.output_host(),
-                        self.settings.monitor_device.clone(),
-                    ) {
-                        self.ui_error = Some(error.to_string());
-                    }
+                    self.play_recording(path, status);
                 }
             }
             if ui
@@ -157,5 +149,30 @@ impl VcGui {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
         ui.small("Uses the headphones selected under Audio. Playback stays local and is not sent to your main voice output.");
+    }
+
+    fn play_recording(&mut self, path: PathBuf, status: &vc_app::EngineStatusSnapshot) {
+        let settings = if status.state == EngineState::Running {
+            self.onboarding
+                .normal
+                .applied
+                .as_ref()
+                .unwrap_or(&self.settings)
+        } else {
+            &self.settings
+        };
+        let output = if status.state == EngineState::Running {
+            &status.output_device
+        } else {
+            &settings.output_device
+        };
+        if let Err(error) = self.recordings.player.play_monitor(
+            path,
+            settings.output_host(),
+            output,
+            settings.monitor_device.clone(),
+        ) {
+            self.ui_error = Some(error.to_string());
+        }
     }
 }

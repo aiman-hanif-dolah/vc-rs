@@ -38,6 +38,148 @@ Weights remain ignored local assets. Conversion used the shared Rust converter.
 
 ## Next acceptance work
 
+### Output prebuffer before device playback (2026-09-18)
+
+Realtime startup now begins input capture first, waits up to 500 ms for two
+converted output chunk to reach the worker queue, and only then starts the main
+output and monitor streams. This avoids consuming an empty output ring while
+model loading and first inference are still underway. A timeout remains bounded
+and starts playback rather than hanging startup; normal steady-state scheduling
+is unchanged.
+
+Release verification with the LJ model, GTCRN, Windows ML, 100 ms chunks, and
+output gain zero reached Running for approximately 10 seconds after startup.
+It reported zero input overruns and zero dropped output samples; startup output
+underruns fell from 20 in the previous comparable run to 2 and stayed at 2.
+The run used physical microphone/headphones and did not save or route audio to
+Discord. A follow-up release run with the two-chunk target reached Running with
+zero input overruns, zero output underruns, and zero dropped samples for its
+15-second interval. The release artifact, installed runtime doctor, installed hash, Start
+Menu shortcut, and login `--start` shortcut all passed verification. The current
+GUI process was preserved; the new build activates on its next launch. Live
+voice naturalness, long-run behavior, and Discord reception remain unresolved
+acceptance items.
+
+### Input processing allocation reuse on voice resume (2026-09-18)
+
+The RVC stream reset now retains the configured input resampler and its FFT
+plans rather than reconstructing the complete stream state. It clears waveform,
+pitch, volume/silence history, fixed FIFO and filter state, resets delay trimming,
+and resets the existing random/NSF phase and GTCRN state. Independent reference
+resampling already resets on each window and keeps its reusable storage.
+Sample-rate/chunk changes still follow the existing rebuild path.
+
+Added a reset-versus-fresh resampler regression covering 16/44.1/48/96 kHz,
+30 ms hops, prior audio, and subsequent varying samples. Core/app/GUI test targets
+compiled with Windows ML/RNNoise/GTCRN; tests were not executed. This source
+change is not installed. Live transition quality and timing remain unverified.
+
+### Recording playback route guard (2026-09-18)
+
+Code inspection confirmed the recording picker already runs on a background
+thread. Found instead that both recording Play actions used pending device
+settings and could target the main output despite the headphone-only UI promise.
+They now share one handler using the applied settings while Running and an
+AudioFilePlayer monitor-only entry point that rejects empty/whitespace or
+main-output headphone selections before enqueuing playback. Normal output
+playback remains available to soundboard callers through its existing API.
+Added a guard regression case checking rejection does not advance playback
+generation or start loading. Live routing verification and installation of this
+specific change remain pending; automated tests have not been executed.
+
+The subsequent GUI/CLI release build and installed runtime diagnostic passed.
+The recording-route safeguard is now in the side-by-side installation selected
+by Start Menu and login shortcuts, with `--start` retained for login. Installed
+GUI hash matches the release artifact; the normal settings hash stayed unchanged.
+The existing GUI process was preserved, so the safeguard activates on the next
+normal launch. Actual recording playback routing still needs a live check.
+
+### Current installation handoff (2026-09-18)
+
+Installed the UI-verified WAV import build side by side, including the microphone
+meter correction and output-reset allocation reuse. Installed Windows ML runtime
+diagnostics passed with DirectML/CPU fallback; no supported catalog execution
+provider was found, and the non-NVIDIA warning is expected on this PC.
+The Start Menu and login shortcuts target the new build, with login `--start`
+preserved. The original running GUI was not restarted. Therefore these changes
+are available on the next normal launch, not active in that existing process.
+Earlier section notes about pending installation are superseded by this handoff;
+live resume quality, dropout behavior, and remote Discord reception remain
+unverified. No production-readiness claim is made.
+
+### Personal WAV soundboard import (2026-09-18)
+
+Added an Add WAV sound action with a background native picker and decoding/write
+worker. Shared playback decoding validates the existing duration/sample limits,
+then saves a mono float WAV under the user's Sooara soundboard data directory.
+The original source is untouched; create-new semantics reject duplicate names.
+User clips join bundled clips in the compact grid and use the existing one-shot
+and headphone-preview routes. Personal storage survives side-by-side upgrades.
+Library refresh waits for an in-progress initial scan rather than losing the
+import refresh request. MP3/OGG import is not implemented.
+
+Added tests for duplicate/source preservation, decoded sample preservation,
+picker cancellation, error, completion, and disconnect. App/GUI test targets
+compile and the diff passes whitespace checks; tests were not executed. This
+feature is not installed or UI-verified yet. No real user clip was imported and
+no sound was played during implementation.
+
+Subsequent release-build UI verification used the computer-use skill with the
+existing isolated APPDATA profile and unavailable diagnostic audio endpoints.
+Imported bundled `combo_breaker.wav`: a personal tile appeared, the picker
+returned to enabled state, and a 305716-byte normalized WAV was created only in
+that profile. A second import showed the file-exists error without changing its
+SHA256 (`45AD1582121D52623097B0E94645FF79A0ADAF3F1C7468DA2D4D2F16658553AE`).
+The app remained Stopped; no clip was played. Closed the diagnostic app and
+verified the normal GUI settings hash was unchanged and the original GUI process
+remained responding. The feature is UI-verified for import and duplicate rejection,
+but not yet installed in the normal user's shortcut target. Automated tests
+remain unexecuted.
+
+### Retained output processing allocations on voice resume (2026-09-18)
+
+The shared chunk converter now resets its smoother and output resampler in
+place instead of dropping them during warmup and every return from Clean Voice.
+This retains FFT plans and buffer capacity while clearing join history, filter
+state, pending samples, counters, and startup delay. Model-rate changes continue
+to rebuild both components through the existing rate check. Input/model context
+reset remains unchanged and can still contribute switch-time work.
+
+Added a SOLA/PSOLA regression case comparing resumed 40 kHz-to-48 kHz output
+against a fresh converter across multiple chunks. Core/app/GUI test targets
+compiled with Windows ML, RNNoise, and GTCRN; tests were not executed. Changed
+core files pass rustfmt and the diff passes whitespace checks. This optimization
+is not installed: real switching latency and audio-quality validation remain
+outstanding, and no reduction in audible dropouts is claimed.
+
+The GUI/CLI release build subsequently passed. Converted the preserved dry
+recording offline using GTCRN, CPU Windows ML, 100 ms chunks, and the same LJ
+model/settings as the earlier SOLA reference. The new WAV is byte-identical to
+that reference (SHA256
+`B842B37A7A7A0EFEBF0490EA11F14CAD407DB55972E4828049E2ECFFDED839C7`).
+This confirms unchanged steady offline conversion for that recording, not live
+resume behavior: finite conversion does not exercise the reset operation.
+The existing reset regression now expects the known resampler delay to remain
+available after reset, while retaining its fresh-output equivalence assertion.
+Its updated test target compiled without executing tests. No audio was sent to
+Discord and the running GUI was not restarted.
+
+### Microphone meter before noise suppression (2026-09-18)
+
+Normal-screen input RMS now uses a separate worker-side device measurement,
+after input gain but before clipping or noise suppression, matching the input
+peak warning. Existing post-denoiser pipeline RMS remains unchanged for other
+consumers. This prevents successful suppression from hiding microphone activity
+on the input bar. No audio samples, gain, or callback work were changed.
+
+The Windows ML/RNNoise/GTCRN vc-app and vc-gui test targets compiled; tests were
+not executed. Added coverage for independent raw/processed readings and reset.
+GUI/CLI release builds and the side-by-side installed runtime diagnostic passed.
+The installer retained login startup with `--start`; the existing running app
+was not restarted, so the new meter takes effect on the next normal launch.
+Formatting inspection also found pre-existing recovery-block formatting
+differences, left untouched. Live microphone-meter rendering remains unverified.
+
 ### Headphone-only soundboard preview (2026-09-18)
 
 Sound tiles now expose a right-click Preview in headphones only action. The

@@ -1,18 +1,77 @@
 use super::*;
 use vc_app::EngineStatusSnapshot;
 
+mod import;
+
 #[derive(Default)]
 pub(crate) struct SoundboardControls {
     player: vc_app::Soundboard,
     library: Option<vc_app::RecordingLibrary>,
+    personal_library: Option<vc_app::RecordingLibrary>,
+    importer: import::SoundImport,
+    refresh_after_import: bool,
     initialized: bool,
     error: Option<String>,
+}
+
+impl SoundboardControls {
+    fn initialize_personal_library(&mut self) {
+        match vc_app::user_soundboard_directory() {
+            Ok(directory) => {
+                let library = vc_app::RecordingLibrary::new(directory);
+                if let Err(error) = library.refresh() {
+                    self.error = Some(error.to_string());
+                }
+                self.personal_library = Some(library);
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn poll_import(&mut self) {
+        match self.importer.poll() {
+            Ok(Some(_)) => {
+                self.error = None;
+                self.refresh_after_import = true;
+            }
+            Ok(None) => {}
+            Err(error) => self.error = Some(error),
+        }
+        if self.refresh_after_import {
+            if let Some(library) = &self.personal_library {
+                if !library.snapshot().loading {
+                    self.refresh_after_import = false;
+                    if let Err(error) = library.refresh() {
+                        self.error = Some(error.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    fn library_snapshot(&self) -> vc_app::RecordingLibrarySnapshot {
+        let mut snapshot = self
+            .library
+            .as_ref()
+            .map(|library| library.snapshot())
+            .unwrap_or_default();
+        if let Some(library) = &self.personal_library {
+            let personal = library.snapshot();
+            snapshot.entries.extend(personal.entries);
+            snapshot.loading |= personal.loading;
+            if let Some(error) = personal.error {
+                snapshot.error = Some(error);
+            }
+        }
+        snapshot
+    }
 }
 
 impl VcGui {
     pub(crate) fn soundboard_ui(&mut self, ui: &mut egui::Ui, status: &EngineStatusSnapshot) {
         if !self.soundboard.initialized {
             self.soundboard.initialized = true;
+            self.soundboard.initialize_personal_library();
             match vc_app::soundboard_directory() {
                 Ok(directory) => {
                     let library = vc_app::RecordingLibrary::new(directory);
@@ -25,6 +84,21 @@ impl VcGui {
             }
         }
         ui.heading("Soundboard");
+        self.soundboard.poll_import();
+        if ui
+            .add_enabled(
+                !self.soundboard.importer.active(),
+                egui::Button::new("Add WAV sound…"),
+            )
+            .clicked()
+        {
+            self.soundboard.error = self.soundboard.importer.start().err();
+        }
+        if self.soundboard.importer.active() {
+            ui.label("Importing sound…");
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let state = self.soundboard.player.snapshot();
         let monitor = self.soundboard.player.monitor_snapshot();
         if ui.button("Stop sounds").clicked() {
@@ -34,8 +108,8 @@ impl VcGui {
         }
         let mut selected = None;
         let mut preview = None;
-        if let Some(library) = &self.soundboard.library {
-            let library = library.snapshot();
+        {
+            let library = self.soundboard.library_snapshot();
             if library.loading {
                 ui.label("Loading sounds…");
             }

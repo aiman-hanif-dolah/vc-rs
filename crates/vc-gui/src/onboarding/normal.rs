@@ -229,7 +229,7 @@ impl VcGui {
                 ui.separator();
                 self.language_picker(ui);
                 ui.separator();
-                self.recordings_ui(ui);
+                self.recordings_ui(ui, status);
                 ui.separator();
                 self.soundboard_ui(ui, status);
                 if ui.button(lang.text(text::SETUP)).clicked() {
@@ -341,7 +341,7 @@ impl VcGui {
                     .changed();
                 let rms = if status.state == EngineState::Running {
                     if input {
-                        self.telemetry.input_rms
+                        self.telemetry.input_device_rms
                     } else {
                         self.telemetry.output_rms
                     }
