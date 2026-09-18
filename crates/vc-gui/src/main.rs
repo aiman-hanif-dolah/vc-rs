@@ -520,6 +520,9 @@ impl VcGui {
         if self.ui_error.is_some() {
             return;
         }
+        if discover_saved_voice_models(&mut self.settings) {
+            self.changed();
+        }
         if self.onboarding.active()
             || self.settings.input_device.is_empty()
             || self.settings.output_device.is_empty()
@@ -1169,6 +1172,34 @@ fn discover_support_models(settings: &mut GuiSettings) -> bool {
     let f0 = model_setup::discover(&mut settings.f0_model, model_setup::MODELS[1].file, &roots);
     let gtcrn = model_setup::discover_gtcrn(&mut settings.gtcrn_model_dir, &roots);
     embedder || f0 || gtcrn
+}
+
+fn discover_saved_voice_models(settings: &mut GuiSettings) -> bool {
+    if model_setup::available(&settings.model) {
+        return false;
+    }
+    let mut roots = Vec::new();
+    if let Ok(dir) = model_setup::cache_dir() {
+        roots.push(dir);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            roots.push(parent.join("assets"));
+        }
+    }
+    let filename = Path::new(&settings.model)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("LJ_Speech_Speaker_e100_s4800.onnx");
+    for root in roots {
+        let path = root.join(filename);
+        if model_setup::available(&path.to_string_lossy()) {
+            settings.model = path.to_string_lossy().into_owned();
+            return true;
+        }
+    }
+    false
 }
 
 fn load_settings() -> (GuiSettings, Option<String>) {
